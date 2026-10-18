@@ -44,6 +44,11 @@ class DefaultsTests(unittest.TestCase):
         self.assertEqual(config.CLONE_STRATEGIES, ("auto", "parts", "zip"))
         self.assertIn(config.CLONE_STRATEGY, config.CLONE_STRATEGIES)
 
+    def test_slide_index_defaults_to_nineteen(self) -> None:
+        # The single-slide default: template slide 19, the two-line sample.
+        self.assertEqual(config.SLIDE_INDEX, 19)
+        self.assertIn("SLIDE_INDEX", config.__all__)
+
     def test_request_cap_is_one_mib(self) -> None:
         self.assertEqual(config.REQUEST_MAX_BYTES, 1024 * 1024)
 
@@ -98,6 +103,23 @@ class EnvNumberTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"LYRICS2PPTX_N": "-1"}):
             with self.assertRaises(ConfigError):
                 config._env_int("LYRICS2PPTX_N", 0, minimum=0)
+
+    def test_slide_index_parser_requires_at_least_one(self) -> None:
+        # The module-level SLIDE_INDEX is parsed with minimum=1; 0 is rejected.
+        with mock.patch.dict(
+            os.environ, {"LYRICS2PPTX_SLIDE_INDEX": "0"}
+        ), self.assertRaises(ConfigError):
+            config._env_int("LYRICS2PPTX_SLIDE_INDEX", 19, minimum=1)
+        with mock.patch.dict(os.environ, {"LYRICS2PPTX_SLIDE_INDEX": "7"}):
+            self.assertEqual(
+                config._env_int("LYRICS2PPTX_SLIDE_INDEX", 19, minimum=1), 7
+            )
+
+    def test_slide_index_parser_rejects_non_numeric(self) -> None:
+        with mock.patch.dict(
+            os.environ, {"LYRICS2PPTX_SLIDE_INDEX": "nineteen"}
+        ), self.assertRaises(ConfigError):
+            config._env_int("LYRICS2PPTX_SLIDE_INDEX", 19, minimum=1)
 
     def test_float_parses_and_rejects(self) -> None:
         with mock.patch.dict(os.environ, {"LYRICS2PPTX_F": " 0.5 "}):

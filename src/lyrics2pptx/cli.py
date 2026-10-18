@@ -71,6 +71,16 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="N",
         help="배경 풀에서 제외할 템플릿 슬라이드 번호 (1-based, 반복 가능)",
     )
+    parser.add_argument(
+        "--slide",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "모든 슬라이드가 복제할 템플릿 배경 번호 (1-based, 1~20, "
+            f"기본 {config.SLIDE_INDEX})"
+        ),
+    )
     parser.add_argument("--keep-notes", action="store_true", help="템플릿 노트도 복제합니다")
     parser.add_argument(
         "--strategy",
@@ -236,6 +246,7 @@ def main(argv: list[str] | None = None) -> int:
             lines=lines,
             dedupe_chorus=args.dedupe_chorus,
             skip_slide=tuple(args.skip_slide),
+            slide_index=args.slide,
             keep_notes=args.keep_notes,
             strategy=args.strategy,
             output_path=Path(args.output) if args.output else None,

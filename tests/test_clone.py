@@ -115,12 +115,12 @@ class CloneInsideBuildTests(unittest.TestCase):
                 [("첫째 줄", "둘째 줄")],
                 TEMPLATE,
                 out,
-                skip_slide=tuple(range(1, 20)),  # pool == (19,) -> slide20
+                slide_index=20,  # template slide 20 uses a full-bleed <p:pic>
                 strategy="parts",
             )
-            self.assertEqual(result.pool_size, 1)
-            self.assertEqual(result.used_bg_indices, (19,))
-            self.assertEqual(media_count(out), 20)
+            self.assertEqual(result.slide_index, 20)
+            # Only the selected background's media survives orphan pruning.
+            self.assertEqual(media_count(out), 1)
 
             presentation = Presentation(str(out))
             self.assertEqual(len(presentation.slides), 1)

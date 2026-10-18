@@ -9,7 +9,7 @@
 <body>
   <header class="app-header">
     <h1>가사 2줄 PPTX 생성기</h1>
-    <p class="subtitle">검색어로 가사를 모아 <code>template.pptx</code> 의 배경 20장에 2줄씩 채웁니다.</p>
+    <p class="subtitle">검색어로 가사를 모아 <code>template.pptx</code> 의 고른 배경 1장에 2줄씩 채웁니다.</p>
   </header>
 
   <main class="app-main">
@@ -49,13 +49,19 @@
       </div>
     </section>
 
+    <section class="panel" aria-labelledby="slides-heading" id="slides-panel">
+      <h2 id="slides-heading">2. 배경 슬라이드 선택</h2>
+      <p id="slides-summary" class="summary">배경 슬라이드를 불러오는 중…</p>
+      <ul id="slides" class="slide-grid" role="radiogroup" aria-label="배경 슬라이드"></ul>
+    </section>
+
     <section class="panel" aria-labelledby="results-heading" id="results-panel" hidden>
-      <h2 id="results-heading">2. 곡 선택</h2>
+      <h2 id="results-heading">3. 곡 선택</h2>
       <ul id="results" class="result-list" role="radiogroup" aria-label="검색 결과"></ul>
     </section>
 
     <section class="panel" aria-labelledby="preview-heading" id="preview-panel" hidden>
-      <h2 id="preview-heading">3. 미리보기</h2>
+      <h2 id="preview-heading">4. 미리보기</h2>
       <p id="preview-summary" class="summary"></p>
       <ol id="preview" class="preview-list" start="1"></ol>
       <div class="pager">
@@ -79,7 +85,7 @@
     </section>
 
     <section class="panel download" id="download-panel" hidden>
-      <h2>4. 다운로드</h2>
+      <h2>5. 다운로드</h2>
       <a id="download-link" href="#" download>가사.pptx 내려받기</a>
     </section>
 

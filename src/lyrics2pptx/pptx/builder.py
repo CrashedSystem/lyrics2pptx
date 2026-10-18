@@ -1,8 +1,12 @@
-"""Build orchestration — background cycle + assembly + atomic save (L3).
+"""Build orchestration — single-background assembly + atomic save (L3).
 
-This module owns exactly one rule (docs/arch/04 §2.1):
+This module owns exactly one rule (docs/arch/04 §2.1, revised to single-slide
+mode):
 
-    bg_index = pool[k % P]        # P = len(pool), k = 0-based output order
+    every output slide is cloned from ``profile.selected_slide``
+
+The user picks one template slide (1-based, ``config.SLIDE_INDEX`` or
+``--slide``) and every generated lyrics slide reuses that exact background.
 
 Everything else is delegation: the writer produces the package bytes, this
 module verifies the result reopens, then swaps it into place atomically
@@ -45,38 +49,31 @@ _FALLBACK_MESSAGE = "슬라이드 복제에 실패했습니다. template.pptx �
 
 @dataclass(frozen=True, slots=True)
 class SlideSpec:
-    """Assembly instruction for one output slide (docs/arch/03 §2)."""
+    """Assembly instruction for one output slide (docs/arch/03 §2).
+
+    ``style`` is the ``제목 1`` snapshot of ``profile.selected_slide``; its
+    ``slide_index`` is the 0-based template index shared by every output slide.
+    """
 
     order: int  # 0-based output order
-    bg_index: int  # template slide index == pool[order % len(pool)]
     line1: str
     line2: str | None
-    style: StyleSpec  # style snapshot of bg_index
+    style: StyleSpec  # style snapshot of profile.selected_slide
 
 
 def build_plan(pairs: list[tuple[str, str | None]], profile: TemplateProfile) -> list[SlideSpec]:
-    """Turn line pairs into per-slide specs using the cycling formula.
+    """Turn line pairs into per-slide specs, all sharing one background.
 
-    Raises:
-        ConfigError: the background pool is empty (nothing to draw from).
+    Every spec carries the style snapshot of ``profile.selected_slide`` so the
+    words land on the same template slide each time (single-slide mode).
     """
-    pool = profile.pool
-    if not pool:
-        raise ConfigError("배경 풀에 사용할 슬라이드가 없습니다")
-    size = len(pool)
-    specs: list[SlideSpec] = []
-    for order, (line1, line2) in enumerate(pairs):
-        bg_index = pool[order % size]
-        specs.append(
-            SlideSpec(
-                order=order,
-                bg_index=bg_index,
-                line1=line1,
-                line2=line2,
-                style=profile.styles.get(bg_index, profile.default_style),
-            )
-        )
-    return specs
+    if not pairs:
+        return []
+    style = profile.styles.get(profile.selected_slide, profile.default_style)
+    return [
+        SlideSpec(order=order, line1=line1, line2=line2, style=style)
+        for order, (line1, line2) in enumerate(pairs)
+    ]
 
 
 def _resolve_output_path(output_path: Path | None) -> Path:
@@ -138,7 +135,7 @@ def _verify_reopenable(path: Path, expected: int) -> None:
 
 def _run_writer(
     writer: PptxWriter,
-    plan: list[tuple[int, str, str | None]],
+    plan: list[tuple[str, str | None]],
     profile: TemplateProfile,
     tmp: Path,
     expected: int,
@@ -162,6 +159,7 @@ def build_presentation(
     output_path: Path | None = None,
     *,
     skip_slide: tuple[int, ...] = (),
+    slide_index: int | None = None,
     keep_notes: bool = False,
     strategy: str = "auto",
 ) -> BuildResult:
@@ -171,26 +169,28 @@ def build_presentation(
         pairs: two-line pairs from ``text.split``.
         template_path: template to read from; defaults to ``config.TEMPLATE_PATH``.
         output_path: destination; defaults to ``output/<DEFAULT_FILENAME>``.
-        skip_slide: 1-based template slides excluded from the background pool.
+        skip_slide: 1-based template slides excluded from the eligible pool
+            (kept for compatibility; single-slide mode always uses ``slide_index``).
+        slide_index: 1-based template slide cloned by every output slide;
+            ``None`` uses ``config.SLIDE_INDEX``.
         keep_notes: copy notesSlide relationships too (default off, AD-08).
         strategy: ``auto`` / ``parts`` / ``zip`` (docs/arch/04 §5).
 
     Raises:
         EmptyLyricsError: ``pairs`` is empty.
-        ConfigError: the pool is empty or the strategy is unknown.
+        ConfigError: ``slide_index`` is out of range or the strategy is unknown.
         TemplateStructureError: no writer could produce a reopenable document.
         OutputWriteError: the output directory/temp file/replace failed.
     """
     if not pairs:
         raise EmptyLyricsError("가사에서 유효한 줄을 찾지 못했습니다.")
 
-    profile = get_template_profile(template_path, skip_slide=tuple(skip_slide))
+    profile = get_template_profile(
+        template_path, skip_slide=tuple(skip_slide), slide_index=slide_index
+    )
     specs = build_plan(pairs, profile)
-    plan: list[tuple[int, str, str | None]] = [
-        (spec.bg_index, spec.line1, spec.line2) for spec in specs
-    ]
+    plan: list[tuple[str, str | None]] = [(spec.line1, spec.line2) for spec in specs]
     slide_count = len(plan)
-    pool_size = len(profile.pool)
 
     out = _resolve_output_path(output_path)
     _ensure_parent(out)
@@ -222,11 +222,10 @@ def build_presentation(
         raise
 
     log.info(
-        "built output=%s slides=%d pool=%d wraps=%d bytes=%d",
+        "built output=%s slides=%d background=%d bytes=%d",
         out,
         slide_count,
-        pool_size,
-        result.wrap_count,
+        profile.selected_slide + 1,
         _file_size(out),
     )
     return replace(result, output_path=out)

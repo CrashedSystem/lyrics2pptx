@@ -41,6 +41,7 @@ __all__ = [
     "preview",
     "search_hits",
     "search_songs",
+    "resolve_slide_index",
     "describe_error",
     "resolve_output_path",
     "doctor_report",
@@ -254,6 +255,33 @@ def preview(raw_text: str, *, dedupe_chorus: bool = False) -> PreviewResult:
     )
 
 
+def _coerce_slide_index(value: object) -> int:
+    """Coerce a user-supplied slide index to an int, or raise ``ConfigError``.
+
+    Booleans and non-integer floats are rejected (``True`` must not become 1).
+    """
+    if value is None:
+        return config.SLIDE_INDEX
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ConfigError("slide_index 는 정수여야 합니다")
+    if isinstance(value, float):
+        if not value.is_integer():
+            raise ConfigError("slide_index 는 정수여야 합니다")
+        value = int(value)
+    return int(value)
+
+
+def resolve_slide_index(value: object = None) -> int:
+    """Return a validated 1-based slide index (default ``config.SLIDE_INDEX``).
+
+    Raises:
+        ConfigError: ``value`` is not an integer or falls outside 1..slide_count.
+    """
+    index = _coerce_slide_index(value)
+    get_template_profile(config.TEMPLATE_PATH, slide_index=index)
+    return index
+
+
 def run(
     query: str | None = None,
     *,
@@ -263,6 +291,7 @@ def run(
     lines: list[str] | None = None,
     dedupe_chorus: bool = False,
     skip_slide: tuple[int, ...] = (),
+    slide_index: int | None = None,
     keep_notes: bool = False,
     strategy: str = "auto",
     output_path: Path | None = None,
@@ -272,11 +301,14 @@ def run(
     Input priority is ``lines`` > ``raw_text`` > ``query`` (docs/arch/05 §4).
     When ``raw_text``/``lines`` are given, no network call happens.
 
+    ``slide_index`` (1-based) selects the single template slide every output
+    slide is cloned from; ``None`` uses ``config.SLIDE_INDEX``.
+
     Returns:
         ``BuildResult`` for the written file.
 
     Raises:
-        ConfigError: no input was provided.
+        ConfigError: no input was provided or ``slide_index`` is out of range.
         EmptyLyricsError: nothing usable remained after normalization/splitting.
         (plus every collector/template/write error, unmodified)
     """
@@ -310,6 +342,7 @@ def run(
         config.TEMPLATE_PATH,
         out,
         skip_slide=tuple(skip_slide),
+        slide_index=slide_index,
         keep_notes=keep_notes,
         strategy=strategy,
     )
@@ -323,6 +356,7 @@ def doctor_report() -> dict[str, object]:
         "template_exists": template.is_file(),
         "fixture_mode": config.FIXTURE_DIR is not None,
         "configured_strategy": config.CLONE_STRATEGY,
+        "configured_slide_index": config.SLIDE_INDEX,
         "sources": list(available_sources()),
         "output_dir": str(config.OUTPUT_DIR),
     }
@@ -333,6 +367,10 @@ def doctor_report() -> dict[str, object]:
                 {
                     "template_size": profile.template_size,
                     "slide_count": profile.slide_count,
+                    "selected_slide": profile.selected_slide + 1,
+                    "selected_slide_has_title_shape": (
+                        profile.styles[profile.selected_slide].shape_found
+                    ),
                     "pool": list(profile.pool),
                     "pool_size": len(profile.pool),
                     "slide_size": list(profile.slide_size),

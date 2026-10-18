@@ -33,8 +33,9 @@ from lyrics2pptx.pptx.template_reader import find_title_shape, get_template_prof
 
 TEMPLATE = Path(__file__).resolve().parents[1] / "template.pptx"
 
-# Background pool reduced to template slide 19 (0-based index 18, sz == 6600).
-SKIP_TO_SLIDE_19 = tuple([*range(1, 19), 20])
+# Single-slide mode: every output slide clones template slide 19 (0-based index
+# 18, sz == 6600), the default background.
+SLIDE_19 = 19
 
 PAIRS = [("A & B < C", "2 > 1"), ("odd line", None)]
 
@@ -61,7 +62,7 @@ class FillInBuildTests(unittest.TestCase):
         cls._tmp = tempfile.TemporaryDirectory()
         cls.out = Path(cls._tmp.name) / "fill.pptx"
         cls.result = build_presentation(
-            PAIRS, TEMPLATE, cls.out, skip_slide=SKIP_TO_SLIDE_19, strategy="parts"
+            PAIRS, TEMPLATE, cls.out, slide_index=SLIDE_19, strategy="parts"
         )
         cls.presentation = Presentation(str(cls.out))
         cls.slides = list(cls.presentation.slides)

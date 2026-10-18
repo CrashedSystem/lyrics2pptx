@@ -2,17 +2,17 @@
  * 가사 2줄 PPTX 생성기 — 프런트엔드 로직 (vanilla JS, 프레임워크 없음).
  *
  * 상태 키: mode, query, results, selectedIndex, selectedLines, previewPairs,
- * busy, page.
+ * busy, page, slideIndex, slides.
  * 정규화(N1~N10)와 2줄 페어링은 서버 단일 소스가 계산한다: 직접 입력 미리보기는
  * POST /api/preview (pipeline.preview → text.normalize) 결과를 그대로 쓴다.
- * 클라이언트는 마커/정규화 규칙을 재구현하지 않는다 — 중복 구현이 프리뷰와 실제
- * 결과의 불일치를 낳았기 때문이다(리뷰 M1). 검색 모드에서는 서버가 보낸 부분
- * 미리보기 줄(preview_lines, 이미 정규화됨)만 이 스크립트에서 2줄로 묶는다.
+ * 배경 선택은 서버(/api/slides)가 준 썸네일 격자로 고른다 — 고른 1장을 모든
+ * 슬라이드가 복제한다. 클라이언트는 마커/정규화 규칙을 재구현하지 않는다.
  */
 "use strict";
 
 var PAGE_SIZE = 3; // 미리보기 페이지당 슬라이드 수
 var PREVIEW_DEBOUNCE_MS = 250; // 직접 입력 미리보기 디바운스
+var DEFAULT_SLIDE_INDEX = 19; // 템플릿에서 "정확히 2줄" 예시가 있는 슬라이드
 
 var state = {
   mode: "search",
@@ -23,6 +23,8 @@ var state = {
   previewPairs: null, // 직접 입력 모드에서 서버가 계산한 [[a,b],...]
   busy: false,
   page: 0,
+  slideIndex: DEFAULT_SLIDE_INDEX,
+  slides: [],
 };
 
 // 직접 입력 미리보기 요청 순번: 늦게 도착한 이전 응답을 무시한다.
@@ -37,6 +39,9 @@ var el = {
   source: document.getElementById("source"),
   searchButton: document.getElementById("search-button"),
   rawText: document.getElementById("raw-text"),
+  slidesPanel: document.getElementById("slides-panel"),
+  slidesSummary: document.getElementById("slides-summary"),
+  slides: document.getElementById("slides"),
   resultsPanel: document.getElementById("results-panel"),
   results: document.getElementById("results"),
   previewPanel: document.getElementById("preview-panel"),
@@ -101,6 +106,102 @@ function splitPairs(lines, dedupeRepeat) {
     pairs.push([src[i], i + 1 < src.length ? src[i + 1] : null]);
   }
   return pairs;
+}
+
+/* ------------------------------------------------------- slide selection */
+
+// 서버(/api/slides)가 준 20개 슬라이드 메타로 썸네일 격자를 그린다. 기본 19가
+// 미리 선택되며, 고른 1장을 모든 산출 슬라이드가 복제한다.
+function backgroundLabel() {
+  return "template " + state.slideIndex;
+}
+
+function updateSlidesSummary() {
+  el.slidesSummary.textContent =
+    "선택한 배경: template " + state.slideIndex + " (모든 슬라이드에 동일 적용)";
+}
+
+function renderSlides() {
+  el.slides.textContent = "";
+  if (!state.slides.length) return;
+
+  state.slides.forEach(function (meta) {
+    var selected = meta.index === state.slideIndex;
+    var li = document.createElement("li");
+    li.className = "slide-item" + (selected ? " selected" : "");
+    li.setAttribute("role", "radio");
+    li.setAttribute("aria-checked", selected ? "true" : "false");
+    li.setAttribute("tabindex", "0");
+
+    var frame = document.createElement("span");
+    frame.className = "slide-thumb";
+    var img = document.createElement("img");
+    img.src = meta.thumbnail_url;
+    img.alt = "슬라이드 " + meta.index + " 배경";
+    img.loading = "lazy";
+    img.addEventListener("error", function () {
+      img.hidden = true;
+      if (!frame.querySelector(".slide-thumb-fallback")) {
+        var fallback = document.createElement("span");
+        fallback.className = "slide-thumb-fallback";
+        fallback.textContent = "이미지 없음";
+        frame.appendChild(fallback);
+      }
+    });
+    frame.appendChild(img);
+
+    var caption = document.createElement("span");
+    caption.className = "slide-caption";
+    caption.textContent = meta.index + (meta.has_title_shape ? "" : " (제목 없음)");
+
+    li.appendChild(frame);
+    li.appendChild(caption);
+    li.addEventListener("click", function () { selectSlide(meta.index); });
+    li.addEventListener("keydown", function (event) {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        selectSlide(meta.index);
+      }
+    });
+    el.slides.appendChild(li);
+  });
+}
+
+function selectSlide(index) {
+  if (index === state.slideIndex) return;
+  state.slideIndex = index;
+  renderSlides();
+  updateSlidesSummary();
+  // 선택이 바뀌면 미리보기를 즉시 갱신한다.
+  if (state.mode === "manual") {
+    scheduleManualPreview();
+  } else {
+    renderPreview();
+  }
+}
+
+async function loadSlides() {
+  try {
+    var response = await fetch("/api/slides");
+    var payload = await response.json();
+    if (!response.ok) {
+      throw new Error(
+        (payload.error && payload.error.message) || "배경 슬라이드를 불러오지 못했습니다."
+      );
+    }
+    state.slides = Array.isArray(payload) ? payload : (payload.slides || []);
+    var exists = state.slides.some(function (meta) { return meta.index === state.slideIndex; });
+    if (!exists && state.slides.length) {
+      state.slideIndex = state.slides[state.slides.length - 1].index;
+    }
+  } catch (err) {
+    state.slides = [];
+    el.slidesSummary.textContent =
+      err.message || "배경 슬라이드를 불러오지 못했습니다.";
+    return;
+  }
+  renderSlides();
+  updateSlidesSummary();
 }
 
 /* ------------------------------------------------------------------ search */
@@ -218,6 +319,7 @@ async function refreshManualPreview() {
       body: JSON.stringify({
         raw_text: el.rawText.value,
         dedupe_chorus: el.dedupe.checked,
+        slide_index: state.slideIndex,
       }),
     });
     var payload = await response.json().catch(function () { return {}; });
@@ -261,8 +363,9 @@ function renderPreview() {
   el.previewPanel.hidden = false;
 
   var slideCount = pairs.length;
-  el.previewSummary.textContent = "줄 " + state.selectedLines.length + "개 → 슬라이드 " + slideCount + "장";
-  el.pageLabel.textContent = "배경 순환: template 1 → 20 순서로 반복";
+  el.previewSummary.textContent =
+    "줄 " + state.selectedLines.length + "개 → 슬라이드 " + slideCount + "장 (배경 " + backgroundLabel() + ")";
+  el.pageLabel.textContent = "배경 " + backgroundLabel() + " 을(를) 모든 슬라이드에 사용";
 
   var pageCount = Math.max(1, Math.ceil(slideCount / PAGE_SIZE));
   if (state.page >= pageCount) state.page = pageCount - 1;
@@ -304,7 +407,7 @@ async function doGenerate() {
     return;
   }
 
-  var body = { dedupe_chorus: el.dedupe.checked, filename: el.filename.value.trim() || "가사.pptx" };
+  var body = { dedupe_chorus: el.dedupe.checked, filename: el.filename.value.trim() || "가사.pptx", slide_index: state.slideIndex };
   if (state.mode === "manual") {
     body.raw_text = el.rawText.value;
   } else {
@@ -392,3 +495,4 @@ el.filename.addEventListener("keydown", function (event) {
 
 setMode("search");
 renderPreview();
+loadSlides();

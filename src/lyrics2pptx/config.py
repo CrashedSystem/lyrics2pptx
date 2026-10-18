@@ -39,6 +39,7 @@ __all__ = [
     "CACHE_ENABLED",
     "CLONE_STRATEGY",
     "TITLE_SHAPE_NAME",
+    "SLIDE_INDEX",
     "NORM_AUTOFIT",
     "REQUEST_MAX_BYTES",
     "ROBOTS_CACHE_TTL",
@@ -160,6 +161,13 @@ CLONE_STRATEGY = _env_str_choice("LYRICS2PPTX_CLONE_STRATEGY", "auto", CLONE_STR
 
 TITLE_SHAPE_NAME = _env_str("LYRICS2PPTX_TITLE_SHAPE", "제목 1")
 
+# 1-based template slide number that every output slide is cloned from (single
+# background mode). The default 19 is the only template slide whose ``제목 1``
+# sample is exactly two lines ("우리 함께 손잡고 가세" / "조금 느리고 어려울지라도"),
+# so it previews the real output shape without extra filling. The upper bound
+# (slide_count) is enforced by ``template_reader`` because it needs the template.
+SLIDE_INDEX = _env_int("LYRICS2PPTX_SLIDE_INDEX", 19, minimum=1)
+
 _KNOWN_ENV = frozenset(
     {
         "LYRICS2PPTX_TEMPLATE",
@@ -180,6 +188,7 @@ _KNOWN_ENV = frozenset(
         "LYRICS2PPTX_CACHE_ENABLED",
         "LYRICS2PPTX_CLONE_STRATEGY",
         "LYRICS2PPTX_TITLE_SHAPE",
+        "LYRICS2PPTX_SLIDE_INDEX",
     }
 )
 

@@ -39,6 +39,13 @@ from .template_reader import (
     find_title_shape,
     get_template_profile,
 )
+from .thumbnails import (
+    SlideMeta,
+    SlideThumbnail,
+    clear_thumbnail_cache,
+    get_slide_thumbnail,
+    list_slide_meta,
+)
 from .writer import PartsWriter, PptxWriter, ZipWriter, select_writer
 from .writer_parts import write_via_parts
 from .writer_zip import write_via_zip
@@ -51,6 +58,12 @@ __all__ = [
     "clear_profile_cache",
     "extract_slide_style",
     "find_title_shape",
+    # thumbnails
+    "SlideMeta",
+    "SlideThumbnail",
+    "list_slide_meta",
+    "get_slide_thumbnail",
+    "clear_thumbnail_cache",
     # clone
     "clone_slide",
     "remap_relationships",

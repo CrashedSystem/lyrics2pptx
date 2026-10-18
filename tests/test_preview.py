@@ -172,7 +172,7 @@ class PreviewNormalizationTests(PreviewRouteTestCase):
     def test_empty_raw_text_returns_an_empty_preview(self) -> None:
         self.assertEqual(
             self.preview({"raw_text": ""}),
-            {"lines": [], "pairs": [], "removed_marker_count": 0},
+            {"lines": [], "pairs": [], "removed_marker_count": 0, "slide_index": 19},
         )
 
     def test_dedupe_chorus_flag_reaches_the_preview(self) -> None:
@@ -190,6 +190,40 @@ class PreviewNormalizationTests(PreviewRouteTestCase):
 
         self.assertEqual(flat(without), ["반복", "A", "반복", "B", "반복", "C"])
         self.assertEqual(flat(with_flag), ["반복", "A", "반복", "B", "C"])
+
+
+class PreviewSlideIndexTests(PreviewRouteTestCase):
+    """The chosen background slide is echoed back and validated (single-slide)."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        if not TEMPLATE.is_file():
+            self.skipTest(f"template not found: {TEMPLATE}")
+
+    def test_default_slide_index_is_nineteen(self) -> None:
+        self.assertEqual(self.preview({"raw_text": "가\n나"})["slide_index"], 19)
+
+    def test_explicit_slide_index_is_echoed(self) -> None:
+        payload = self.preview({"raw_text": "가\n나", "slide_index": 5})
+        self.assertEqual(payload["slide_index"], 5)
+
+    def test_out_of_range_slide_index_is_a_bad_request(self) -> None:
+        for bad in (0, 21, -1):
+            with self.subTest(slide_index=bad):
+                status, _, body = self.post_json(
+                    "/api/preview", {"raw_text": "가\n나", "slide_index": bad}
+                )
+                self.assertEqual(status, 400)
+                self.assertEqual(json.loads(body)["error"]["code"], "BAD_REQUEST")
+
+    def test_non_integer_slide_index_is_a_bad_request(self) -> None:
+        for bad in (1.5, True, "19"):
+            with self.subTest(slide_index=bad):
+                status, _, body = self.post_json(
+                    "/api/preview", {"raw_text": "가\n나", "slide_index": bad}
+                )
+                self.assertEqual(status, 400)
+                self.assertEqual(json.loads(body)["error"]["code"], "BAD_REQUEST")
 
 
 class PreviewErrorTests(PreviewRouteTestCase):

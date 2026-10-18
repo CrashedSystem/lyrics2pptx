@@ -99,6 +99,19 @@ class ArgumentValidationTests(unittest.TestCase):
             code, _, _ = run_cli(["--input-file", str(path), "--skip-slide", "99"])
         self.assertEqual(code, 1)
 
+    def test_slide_out_of_range_is_a_bad_request(self) -> None:
+        # 0 and slide_count+1 (21) must fail loudly — never clamped silently.
+        for slide in ("0", "21"):
+            with self.subTest(slide=slide), tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / "in.txt"
+                path.write_text("a\nb\n", encoding="utf-8")
+                out_path = Path(tmp) / "r.pptx"
+                code, _, _ = run_cli(
+                    ["--input-file", str(path), "-o", str(out_path), "--slide", slide]
+                )
+                self.assertEqual(code, 1)
+                self.assertFalse(out_path.is_file())
+
 
 class EmptyLyricsTests(unittest.TestCase):
     def test_marker_only_input_exits_with_code_three(self) -> None:
@@ -151,6 +164,14 @@ class DoctorTests(unittest.TestCase):
         self.assertEqual(report["slide_count"], 20)
         self.assertIn(report["clone_writer"], ("parts", "zip"))
 
+    def test_doctor_reports_the_selected_slide(self) -> None:
+        code, out, _ = run_cli(["--doctor", "--json"])
+        self.assertEqual(code, 0)
+        report = json.loads(out)
+        self.assertEqual(report["selected_slide"], 19)
+        self.assertTrue(report["selected_slide_has_title_shape"])
+        self.assertEqual(report["configured_slide_index"], 19)
+
     def test_doctor_plain_output_lists_keys(self) -> None:
         code, out, _ = run_cli(["--doctor"])
         self.assertEqual(code, 0)
@@ -198,6 +219,47 @@ class BuildSuccessTests(unittest.TestCase):
             code, _, _ = run_cli(["--lines-file", str(lines_file), "-o", str(out_path)])
             self.assertEqual(code, 0)
             self.assertTrue(out_path.is_file())
+
+    def test_slide_option_builds_on_the_chosen_background(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            lines_file = Path(tmp) / "lines.txt"
+            lines_file.write_text("첫째 줄\n둘째 줄\n", encoding="utf-8")
+            out_path = Path(tmp) / "result.pptx"
+            code, _, _ = run_cli(
+                [
+                    "--lines-file",
+                    str(lines_file),
+                    "-o",
+                    str(out_path),
+                    "--slide",
+                    "20",
+                    "--strategy",
+                    "parts",
+                ]
+            )
+            self.assertEqual(code, 0)
+            self.assertTrue(out_path.is_file())
+
+    def test_slide_option_accepts_both_boundaries(self) -> None:
+        for slide in ("1", "20"):
+            with self.subTest(slide=slide), tempfile.TemporaryDirectory() as tmp:
+                lines_file = Path(tmp) / "lines.txt"
+                lines_file.write_text("가\n나\n", encoding="utf-8")
+                out_path = Path(tmp) / "result.pptx"
+                code, _, _ = run_cli(
+                    [
+                        "--lines-file",
+                        str(lines_file),
+                        "-o",
+                        str(out_path),
+                        "--slide",
+                        slide,
+                        "--strategy",
+                        "parts",
+                    ]
+                )
+                self.assertEqual(code, 0)
+                self.assertTrue(out_path.is_file())
 
 
 if __name__ == "__main__":

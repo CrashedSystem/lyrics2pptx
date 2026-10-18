@@ -1,21 +1,25 @@
 """Fallback F1 writer — rewrite the OPC package with ``zipfile`` + ``lxml``.
 
 Used when method A is impossible (capability probe failed) or when its output
-cannot be reopened (docs/arch/04 §6). The external contract is identical: the
-produced ``.pptx`` opens and keeps every background.
+cannot be reopened (docs/arch/04 §6). The external contract is identical to
+method A: single-slide mode, orphan pruning, and a document that opens.
 
 Strategy, chosen for correctness over cleverness:
 
-* every template member is copied **verbatim** into the output zip, so media,
-  layouts, themes and the original slides are byte-for-byte preserved and the
-  ``ppt/media/*`` count cannot change (AD-06);
 * for each planned slide ``k`` a fresh part ``ppt/slides/slide{1000+k}.xml`` is
-  written from the source slide ``pool[k % P]`` with ``제목 1`` refilled;
+  written from the **same** source slide (``profile.selected_slide``) with
+  ``제목 1`` refilled;
 * the new slide's rels file is a copy of the source's with ``notesSlide``
   entries dropped — rIds stay valid because the rels file is per-part;
-* ``[Content_Types].xml`` gains an ``Override`` per new part, and
-  ``ppt/presentation.xml(.rels)`` gains one relationship per new part;
-* ``<p:sldIdLst>`` is rebuilt to list only the new slides.
+* the presentation→original-slide relationships are removed and the
+  ``<p:sldIdLst>`` is rebuilt to list only the new slides;
+* the package is then **pruned by reachability**: only members reachable from
+  ``_rels/.rels`` through the (rewritten) relationship graph are written, so the
+  unused original slides, their notes, their media and every layout/master/theme
+  no kept slide needs are omitted;
+* ``[Content_Types].xml`` loses the ``Override`` entries of pruned parts and
+  gains one per new part; every kept relationship resolves to a written part
+  (no dangling relationships).
 
 The writer only *writes* the given path; the builder owns the temp→``os.replace``
 step (AD-13), so F1 and method A share the exact same atomicity guarantee.
@@ -24,6 +28,7 @@ step (AD-13), so F1 and method A share the exact same atomicity guarantee.
 from __future__ import annotations
 
 import logging
+import posixpath
 import zipfile
 from pathlib import Path
 
@@ -45,6 +50,7 @@ _P_NS = "http://schemas.openxmlformats.org/presentationml/2006/main"
 _R_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 
 _CONTENT_TYPES = "[Content_Types].xml"
+_PACKAGE_RELS = "_rels/.rels"
 _PRESENTATION = "ppt/presentation.xml"
 _PRESENTATION_RELS = "ppt/_rels/presentation.xml.rels"
 
@@ -69,6 +75,79 @@ def _slide_member(index: int) -> str:
 
 def _slide_rels_member(index: int) -> str:
     return f"ppt/slides/_rels/slide{index + 1}.xml.rels"
+
+
+def _rels_member(member: str) -> str:
+    """Return the rels member name that belongs to an OPC part member."""
+    directory, _, base = member.rpartition("/")
+    if directory:
+        return f"{directory}/_rels/{base}.rels"
+    return f"_rels/{base}.rels"
+
+
+def _rel_targets(data: dict[str, bytes], member: str | None) -> list[str]:
+    """Return internal relationship targets declared by ``member``.
+
+    ``member`` is ``None`` for the package-level ``_rels/.rels``. External
+    relationships are ignored (they point outside the package).
+    """
+    rels_name = _PACKAGE_RELS if member is None else _rels_member(member)
+    blob = data.get(rels_name)
+    if blob is None:
+        return []
+    root = etree.fromstring(blob)
+    base_dir = "" if member is None else member.rpartition("/")[0]
+    targets: list[str] = []
+    for rel in root.findall(f"{{{_REL_NS}}}Relationship"):
+        if (rel.get("TargetMode") or "").lower() == "external":
+            continue
+        target = rel.get("Target") or ""
+        if not target:
+            continue
+        if target.startswith("/"):
+            resolved = target.lstrip("/")
+        else:
+            resolved = posixpath.normpath(posixpath.join(base_dir, target))
+        targets.append(resolved)
+    return targets
+
+
+def _compute_kept(data: dict[str, bytes]) -> set[str]:
+    """Return every member reachable from the package graph (plus rels files).
+
+    Reachability starts at the package-level ``_rels/.rels`` targets and follows
+    each part's relationships depth-first, so a member is kept only when some
+    relationship chain leads to it. Every kept part also keeps its ``.rels``
+    sidecar so its own relationships stay resolvable.
+    """
+    kept: set[str] = {"[Content_Types].xml", _PACKAGE_RELS}
+    stack: list[str] = list(_rel_targets(data, None))
+
+    while stack:
+        name = stack.pop()
+        if name in kept:
+            continue
+        if name not in data:
+            continue
+        kept.add(name)
+        for target in _rel_targets(data, name):
+            if target not in kept:
+                stack.append(target)
+
+    for name in list(kept):
+        rels_name = _rels_member(name)
+        if rels_name in data:
+            kept.add(rels_name)
+
+    return kept
+
+
+def _filter_content_types(content_types_root: etree._Element, kept: set[str]) -> None:
+    """Drop ``Override`` entries whose part was pruned (Defaults are kept)."""
+    kept_partnames = {f"/{name}" for name in kept}
+    for override in list(content_types_root.findall(f"{{{_CT_NS}}}Override")):
+        if override.get("PartName") not in kept_partnames:
+            content_types_root.remove(override)
 
 
 def _max_sld_id(presentation_root: etree._Element) -> int:
@@ -115,14 +194,12 @@ def write_via_zip(
     """Write ``plan`` into a rebuilt OPC package at ``out``.
 
     Raises:
-        ConfigError: the plan or the background pool is empty.
-        TemplateStructureError: the template is missing an expected member or a
+        ConfigError: the plan is empty.
+        TemplateStructureError: the template is missing an expected member or the
             source slide has no ``제목 1`` shape.
     """
     if not plan:
         raise ConfigError("출력할 슬라이드가 없습니다")
-    if not profile.pool:
-        raise ConfigError("배경 풀에 사용할 슬라이드가 없습니다")
 
     with zipfile.ZipFile(profile.template_path, "r") as archive:
         names = archive.namelist()
@@ -140,16 +217,20 @@ def write_via_zip(
     next_sld_id = _max_sld_id(presentation_root) + 1
     next_r_id = _max_r_id(rels_root) + 1
 
+    original_rids = {element.get(f"{{{_R_NS}}}id") for element in sld_id_lst}
     for element in list(sld_id_lst):
         sld_id_lst.remove(element)
 
-    new_members: list[str] = []
-    for order, (bg_index, line1, line2) in enumerate(plan):
-        source_name = _slide_member(bg_index)
-        source_rels = _slide_rels_member(bg_index)
-        if source_name not in data:
-            raise TemplateStructureError(f"템플릿에 {source_name} 가 없습니다")
+    source_index = profile.selected_slide
+    source_name = _slide_member(source_index)
+    source_rels = _slide_rels_member(source_index)
+    if source_name not in data:
+        raise TemplateStructureError(f"템플릿에 {source_name} 가 없습니다")
 
+    style = profile.styles.get(source_index, profile.default_style)
+
+    new_members: list[str] = []
+    for order, (line1, line2) in enumerate(plan):
         new_index = _NEW_SLIDE_BASE + order
         target_name = f"ppt/slides/slide{new_index}.xml"
         target_rels = f"ppt/slides/_rels/slide{new_index}.xml.rels"
@@ -164,8 +245,8 @@ def write_via_zip(
             tx_body,
             line1,
             line2,
-            style=profile.styles.get(bg_index, profile.default_style),
-            slide_index=bg_index,
+            style=style,
+            slide_index=source_index,
             default_style=profile.default_style,
         )
         data[target_name] = _serialize(slide_root)
@@ -196,31 +277,32 @@ def write_via_zip(
         sld_id.set(f"{{{_R_NS}}}id", r_id)
         next_sld_id += 1
 
+    # Sever the presentation→original-slide relationships so the original slides
+    # (and everything only they reach: notes, media, unused masters) are pruned.
+    for relation in list(rels_root):
+        if relation.get("Id") in original_rids:
+            rels_root.remove(relation)
+
     data[_PRESENTATION] = _serialize(presentation_root)
     data[_PRESENTATION_RELS] = _serialize(rels_root)
+
+    kept = _compute_kept(data)
+    _filter_content_types(content_types_root, kept)
     data[_CONTENT_TYPES] = _serialize(content_types_root)
 
+    ordered = [*names, *(m for m in new_members if m not in names)]
     written: set[str] = set()
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as archive:
-        for name in names:
-            if name in written:
-                continue
-            written.add(name)
-            archive.writestr(name, data[name])
-        for name in new_members:
-            if name in written:
+        for name in ordered:
+            if name in written or name not in kept:
                 continue
             written.add(name)
             archive.writestr(name, data[name])
 
-    used = tuple(bg for bg, _, _ in plan)
     slide_count = len(plan)
-    pool_size = len(profile.pool)
     return BuildResult(
         output_path=Path(out),
         slide_count=slide_count,
-        pool_size=pool_size,
-        wrap_count=(slide_count - 1) // pool_size if slide_count else 0,
-        used_bg_indices=used,
+        slide_index=profile.selected_slide + 1,
         dropped_notes_count=0 if keep_notes else slide_count,
     )

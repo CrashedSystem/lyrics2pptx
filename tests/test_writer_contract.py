@@ -1,8 +1,9 @@
 """Contract tests: the ``parts`` (method A) and ``zip`` (fallback F1) writers.
 
 docs/arch/04 §6 requires the two writers to honour **the same external
-contract**: the produced ``.pptx`` opens, keeps every background, lists exactly
-``N`` slides, and never duplicates a media part. Any divergence is a bug.
+contract**: the produced ``.pptx`` opens, keeps the single selected background,
+lists exactly ``N`` slides, and prunes every orphan part (unused slides, notes,
+media). Any divergence is a bug.
 """
 
 from __future__ import annotations
@@ -30,11 +31,35 @@ from lyrics2pptx.pptx.writer import (
 
 TEMPLATE = Path(__file__).resolve().parents[1] / "template.pptx"
 PAIRS = [("하나", "둘"), ("셋", "넷"), ("다섯", None)]
+TEMPLATE_LYRICS = ("생명샘", "담장 너머로", "손잡고 가세")
 
 
 def media_names(path: Path) -> set[str]:
     with zipfile.ZipFile(path) as archive:
         return {name for name in archive.namelist() if name.startswith("ppt/media/")}
+
+
+def slide_part_names(path: Path) -> list[str]:
+    with zipfile.ZipFile(path) as archive:
+        return [
+            name
+            for name in archive.namelist()
+            if name.startswith("ppt/slides/slide") and name.endswith(".xml")
+        ]
+
+
+def notes_part_names(path: Path) -> list[str]:
+    with zipfile.ZipFile(path) as archive:
+        return [name for name in archive.namelist() if name.startswith("ppt/notesSlides/")]
+
+
+def contains_template_lyrics(path: Path) -> bool:
+    needles = [needle.encode("utf-8") for needle in TEMPLATE_LYRICS]
+    with zipfile.ZipFile(path) as archive:
+        return any(
+            any(needle in archive.read(name) for needle in needles)
+            for name in archive.namelist()
+        )
 
 
 def texts_of(path: Path) -> list[list[str]]:
@@ -81,7 +106,7 @@ class WriterEquivalenceTests(unittest.TestCase):
         cls._tmp.cleanup()
 
     def test_reported_metadata_is_identical(self) -> None:
-        for attribute in ("slide_count", "pool_size", "wrap_count", "used_bg_indices"):
+        for attribute in ("slide_count", "slide_index", "dropped_notes_count"):
             with self.subTest(attribute=attribute):
                 self.assertEqual(
                     getattr(self.parts_result, attribute),
@@ -100,11 +125,24 @@ class WriterEquivalenceTests(unittest.TestCase):
         self.assertEqual(len(parts.slides), 3)
         self.assertEqual(len(zipped.slides), len(parts.slides))
 
-    def test_neither_writer_creates_new_media_parts(self) -> None:
-        with zipfile.ZipFile(TEMPLATE) as archive:
-            template_media = {name for name in archive.namelist() if name.startswith("ppt/media/")}
-        self.assertEqual(media_names(self.parts_out), template_media)
-        self.assertEqual(media_names(self.zip_out), template_media)
+    def test_both_writers_keep_only_the_selected_background_media(self) -> None:
+        self.assertEqual(len(media_names(self.parts_out)), 1)
+        self.assertEqual(media_names(self.parts_out), media_names(self.zip_out))
+
+    def test_both_writers_prune_orphan_slide_and_notes_parts(self) -> None:
+        for path in (self.parts_out, self.zip_out):
+            with self.subTest(path=path.name):
+                self.assertEqual(len(slide_part_names(path)), 3)
+                self.assertEqual(notes_part_names(path), [])
+
+    def test_neither_writer_leaks_template_lyrics_text(self) -> None:
+        self.assertFalse(contains_template_lyrics(self.parts_out))
+        self.assertFalse(contains_template_lyrics(self.zip_out))
+
+    def test_both_outputs_stay_below_ten_megabytes(self) -> None:
+        for path in (self.parts_out, self.zip_out):
+            with self.subTest(path=path.name):
+                self.assertLess(path.stat().st_size, 10 * 1024 * 1024)
 
     def test_neither_writer_clones_notes_slides(self) -> None:
         for path in (self.parts_out, self.zip_out):

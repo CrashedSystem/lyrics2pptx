@@ -18,10 +18,13 @@ from pathlib import Path
 from unittest import mock
 from urllib.parse import quote
 
+from pptx import Presentation
+
 from lyrics2pptx import config, pipeline
 from lyrics2pptx.webapp import build_server
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
+TEMPLATE = Path(__file__).resolve().parents[1] / "template.pptx"
 PPTX_CONTENT_TYPE = (
     "application/vnd.openxmlformats-officedocument.presentationml.presentation"
 )
@@ -252,6 +255,119 @@ class GenerateEndpointTests(WebAppTestCase):
             connection.close()
         self.assertEqual(status, 413)
         self.assertEqual(json.loads(payload)["error"]["code"], "PAYLOAD_TOO_LARGE")
+
+
+class SlidesEndpointTests(WebAppTestCase):
+    """``GET /api/slides`` and ``GET /api/slides/{index}/thumbnail``."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        if not TEMPLATE.is_file():
+            self.skipTest(f"template not found: {TEMPLATE}")
+
+    def test_slides_returns_twenty_metas_in_order(self) -> None:
+        status, headers, body = self.get("/api/slides")
+        self.assertEqual(status, 200)
+        self.assertIn("application/json", headers["content-type"])
+        payload = json.loads(body)
+        self.assertIsInstance(payload, list)
+        self.assertEqual(len(payload), 20)
+        self.assertEqual([meta["index"] for meta in payload], list(range(1, 21)))
+
+    def test_each_meta_carries_the_documented_fields(self) -> None:
+        _, _, body = self.get("/api/slides")
+        first = json.loads(body)[0]
+        self.assertEqual(first["index"], 1)
+        self.assertIsInstance(first["has_title_shape"], bool)
+        self.assertEqual(first["thumbnail_url"], "/api/slides/1/thumbnail")
+
+    def test_thumbnail_returns_raw_image_bytes(self) -> None:
+        # Slide 19 is the default background and has an image blipFill.
+        status, headers, body = self.get("/api/slides/19/thumbnail")
+        self.assertEqual(status, 200)
+        self.assertTrue(headers["content-type"].startswith("image/"), headers["content-type"])
+        self.assertTrue(body, "thumbnail body is empty")
+        self.assertEqual(int(headers["content-length"]), len(body))
+
+    def test_thumbnail_for_a_full_bleed_picture_slide(self) -> None:
+        # Slide 20 uses a full-bleed <p:pic> rather than a <p:bg> blipFill.
+        status, headers, body = self.get("/api/slides/20/thumbnail")
+        self.assertEqual(status, 200)
+        self.assertTrue(headers["content-type"].startswith("image/"))
+        self.assertTrue(body)
+
+    def test_thumbnail_out_of_range_is_a_bad_request(self) -> None:
+        for path in ("/api/slides/0/thumbnail", "/api/slides/21/thumbnail"):
+            with self.subTest(path=path):
+                status, _, body = self.get(path)
+                self.assertEqual(status, 400)
+                self.assertEqual(json.loads(body)["error"]["code"], "BAD_REQUEST")
+
+    def test_thumbnail_non_integer_index_is_a_bad_request(self) -> None:
+        status, _, body = self.get("/api/slides/abc/thumbnail")
+        self.assertEqual(status, 400)
+        self.assertEqual(json.loads(body)["error"]["code"], "BAD_REQUEST")
+
+    def test_thumbnail_for_a_slide_without_an_image_is_404(self) -> None:
+        # Slide 11 has a solid-colour background (no image relationship).
+        status, _, body = self.get("/api/slides/11/thumbnail")
+        self.assertEqual(status, 404)
+        self.assertEqual(json.loads(body)["error"]["code"], "NOT_FOUND")
+
+    def test_malformed_slides_path_is_404(self) -> None:
+        for path in ("/api/slides/19", "/api/slides/19/other"):
+            with self.subTest(path=path):
+                status, _, _ = self.get(path)
+                self.assertEqual(status, 404)
+
+
+class SlideIndexEndpointTests(WebAppTestCase):
+    """The chosen background slide reaches preview and generate."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        if not TEMPLATE.is_file():
+            self.skipTest(f"template not found: {TEMPLATE}")
+
+    def test_preview_defaults_slide_index_to_nineteen(self) -> None:
+        status, _, body = self.post_json("/api/preview", {"raw_text": "가\n나"})
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["slide_index"], 19)
+
+    def test_preview_echoes_the_requested_slide_index(self) -> None:
+        status, _, body = self.post_json(
+            "/api/preview", {"raw_text": "가\n나", "slide_index": 3}
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["slide_index"], 3)
+
+    def test_generate_honours_the_requested_slide_index(self) -> None:
+        status, _, body = self.post_json(
+            "/api/generate",
+            {"raw_text": "가\n나", "slide_index": 20, "filename": "s20.pptx"},
+        )
+        self.assertEqual(status, 200)
+        self.assertTrue(body.startswith(b"PK"))
+        out = Path(self._tmp.name) / "s20.pptx"
+        self.assertTrue(out.is_file())
+        presentation = Presentation(str(out))
+        self.assertEqual(len(presentation.slides), 1)
+
+    def test_generate_out_of_range_slide_index_is_a_bad_request(self) -> None:
+        for slide in (0, 21):
+            with self.subTest(slide_index=slide):
+                status, _, body = self.post_json(
+                    "/api/generate", {"raw_text": "가\n나", "slide_index": slide}
+                )
+                self.assertEqual(status, 400)
+                self.assertEqual(json.loads(body)["error"]["code"], "BAD_REQUEST")
+
+    def test_generate_non_integer_slide_index_is_a_bad_request(self) -> None:
+        status, _, body = self.post_json(
+            "/api/generate", {"raw_text": "가\n나", "slide_index": "x"}
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(json.loads(body)["error"]["code"], "BAD_REQUEST")
 
 
 if __name__ == "__main__":

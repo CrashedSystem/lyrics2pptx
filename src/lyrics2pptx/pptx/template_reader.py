@@ -36,10 +36,11 @@ __all__ = [
 
 log = logging.getLogger(__name__)
 
-# Shared writer plan type: (background template index, line 1, line 2 | None).
-# Declared here (the lowest pptx module) so builder and both writers can import
-# it without introducing a cycle.
-Plan = list[tuple[int, str, str | None]]
+# Shared writer plan type: (line 1, line 2 | None). The background is a single
+# template slide (``TemplateProfile.selected_slide``) shared by every output
+# slide, so it is not part of the plan. Declared here (the lowest pptx module)
+# so builder and both writers can import it without introducing a cycle.
+Plan = list[tuple[str, str | None]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,7 +68,8 @@ class TemplateProfile:
     template_size: int
     template_mtime_ns: int
     slide_count: int
-    pool: tuple[int, ...]  # background pool in template order (e.g. (0..19))
+    selected_slide: int  # 0-based template index cloned by every output slide
+    pool: tuple[int, ...]  # eligible slide indices (all minus skip_slide)
     styles: Mapping[int, StyleSpec]
     default_style: StyleSpec
     slide_size: tuple[int, int]  # EMU (width, height)
@@ -81,13 +83,14 @@ class BuildResult:
     (``writer_parts``/``writer_zip``) and the builder can share it without an
     import cycle, which rule P8 forbids. ``builder`` re-exports it, so
     ``lyrics2pptx.pptx.builder.BuildResult`` remains valid.
+
+    ``slide_index`` is the 1-based template slide number every output slide was
+    cloned from (single background mode).
     """
 
     output_path: Path
-    slide_count: int  # == len(pairs)
-    pool_size: int  # == len(pool)
-    wrap_count: int  # how many times the pool wrapped around
-    used_bg_indices: tuple[int, ...]  # background index actually used, in order
+    slide_count: int  # == len(plan)
+    slide_index: int  # 1-based template slide used as the shared background
     dropped_notes_count: int  # notes slides not cloned (== slide_count by default)
 
 
@@ -210,6 +213,7 @@ def _analyze(
     template_path: Path,
     *,
     skip_slide: tuple[int, ...],
+    slide_index: int,
     file_size: int,
     mtime_ns: int,
 ) -> TemplateProfile:
@@ -227,6 +231,13 @@ def _analyze(
             raise ConfigError(
                 f"--skip-slide 값이 범위를 벗어났습니다: {index} (1..{slide_count} 허용)"
             )
+
+    # ``slide_index`` is 1-based (template slide number). Out-of-range values are
+    # a hard configuration error — never clamped silently.
+    if not 1 <= slide_index <= slide_count:
+        raise ConfigError(
+            f"슬라이드 번호가 범위를 벗어났습니다: {slide_index} (1..{slide_count} 허용)"
+        )
 
     styles: dict[int, StyleSpec] = {
         index: extract_slide_style(presentation.slides[index], index)
@@ -249,6 +260,7 @@ def _analyze(
         template_size=file_size,
         template_mtime_ns=mtime_ns,
         slide_count=slide_count,
+        selected_slide=slide_index - 1,
         pool=pool,
         styles=styles,
         default_style=default_style,
@@ -260,35 +272,50 @@ def get_template_profile(
     template_path: Path | None = None,
     *,
     skip_slide: tuple[int, ...] = (),
+    slide_index: int | None = None,
 ) -> TemplateProfile:
     """Return the (cached) template profile.
 
+    Args:
+        template_path: template to read; defaults to ``config.TEMPLATE_PATH``.
+        skip_slide: 1-based template slides excluded from ``pool``.
+        slide_index: 1-based template slide cloned by every output slide;
+            ``None`` uses ``config.SLIDE_INDEX``.
+
     Raises:
-        ConfigError: the template file is missing or cannot be parsed.
+        ConfigError: the template file is missing, cannot be parsed, or
+            ``slide_index`` is out of range.
     """
     path = Path(template_path) if template_path is not None else config.TEMPLATE_PATH
     if not path.is_file():
         raise ConfigError(f"템플릿을 열 수 없습니다: {path}")
 
+    selected = config.SLIDE_INDEX if slide_index is None else slide_index
+
     stat = path.stat()
-    key = (str(path), stat.st_size, stat.st_mtime_ns, tuple(sorted(skip_slide)))
+    key = (str(path), stat.st_size, stat.st_mtime_ns, tuple(sorted(skip_slide)), selected)
     cached = _PROFILE_CACHE.get(key)
     if cached is not None:
         log.debug(
-            "profile cache hit key=(size=%d,mtime=%d)", stat.st_size, stat.st_mtime_ns
+            "profile cache hit key=(size=%d,mtime=%d,slide=%d)",
+            stat.st_size,
+            stat.st_mtime_ns,
+            selected,
         )
         return cached
 
     profile = _analyze(
         path,
         skip_slide=key[3],
+        slide_index=key[4],
         file_size=stat.st_size,
         mtime_ns=stat.st_mtime_ns,
     )
     _PROFILE_CACHE[key] = profile
     log.info(
-        "template profile loaded slides=%d pool=%d cached=%s",
+        "template profile loaded slides=%d selected=%d pool=%d cached=%s",
         profile.slide_count,
+        profile.selected_slide + 1,
         len(profile.pool),
         False,
     )

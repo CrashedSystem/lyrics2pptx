@@ -1,10 +1,11 @@
 """Local single-user web app (L4).
 
 An ``http.server`` front end for ``pipeline`` (docs/arch/05 §2, docs/plan/06
-§2): ``/``, ``/static/*``, ``/api/search``, ``/api/preview`` and
-``/api/generate``. Nothing here contains domain logic: requests are validated,
-handed to ``pipeline.preview``/``pipeline.run``/``search_hits``, and the result
-is streamed back.
+§2): ``/``, ``/static/*``, ``/api/search``, ``/api/slides``,
+``/api/slides/{index}/thumbnail``, ``/api/preview`` and ``/api/generate``.
+Nothing here contains domain logic: requests are validated, handed to
+``pipeline.preview``/``pipeline.run``/``search_hits``, and the result is streamed
+back.
 
 Security boundary (docs/arch/06 §3): bound to ``127.0.0.1``, static serving is
 containment-checked against ``web/``, and request bodies are capped at
@@ -27,6 +28,7 @@ from uuid import uuid4
 
 from . import __version__, config, pipeline
 from .errors import ConfigError, Lyrics2PptxError, OutputWriteError
+from .pptx import thumbnails
 
 log = logging.getLogger("lyrics2pptx.webapp")
 
@@ -93,7 +95,8 @@ def _coerce_int(value: object, default: int) -> int:
 
 
 class Lyrics2PptxHandler(BaseHTTPRequestHandler):
-    """Route dispatcher for ``/``, ``/static/*``, ``/api/search``, ``/api/preview``, and
+    """Route dispatcher for ``/``, ``/static/*``, ``/api/search``,
+    ``/api/slides``, ``/api/slides/{index}/thumbnail``, ``/api/preview``, and
     ``/api/generate``."""
 
     server_version = f"lyrics2pptx/{__version__}"
@@ -170,8 +173,14 @@ class Lyrics2PptxHandler(BaseHTTPRequestHandler):
                 self._serve_static(parsed.path[len("/static/") :])
             elif parsed.path == "/api/search":
                 self._handle_search(parse_qs(parsed.query), rid)
+            elif parsed.path == "/api/slides":
+                self._handle_slides()
+            elif parsed.path.startswith("/api/slides/"):
+                self._handle_thumbnail(parsed.path)
             else:
                 self._send_json(404, _NOT_FOUND_ERROR)
+        except Lyrics2PptxError as exc:
+            self._send_error(exc, rid)
         except Exception:
             log.exception("unhandled error path=%s rid=%s", self.path, rid)
             self._send_json(500, _INTERNAL_ERROR)
@@ -213,6 +222,37 @@ class Lyrics2PptxHandler(BaseHTTPRequestHandler):
             self._send_error(exc, rid)
             return
         self._send_json(200, {"results": [asdict(hit) for hit in hits]})
+
+    def _handle_slides(self) -> None:
+        """``GET /api/slides`` — metadata for every selectable template slide."""
+        metas = thumbnails.list_slide_meta()
+        self._send_json(
+            200,
+            [
+                {
+                    "index": meta.index,
+                    "has_title_shape": meta.has_title_shape,
+                    "thumbnail_url": meta.thumbnail_url,
+                }
+                for meta in metas
+            ],
+        )
+
+    def _handle_thumbnail(self, path: str) -> None:
+        """``GET /api/slides/{index}/thumbnail`` — raw background image bytes."""
+        segments = path.strip("/").split("/")
+        if len(segments) != 4 or segments[3] != "thumbnail":
+            self._send_json(404, _NOT_FOUND_ERROR)
+            return
+        try:
+            index = int(segments[2])
+        except ValueError as exc:
+            raise ConfigError("슬라이드 번호는 정수여야 합니다") from exc
+        thumbnail = thumbnails.get_slide_thumbnail(index)
+        if thumbnail is None:
+            self._send_json(404, _NOT_FOUND_ERROR)
+            return
+        self._send(200, thumbnail.data, thumbnail.content_type)
 
     # --- POST -------------------------------------------------------------
 
@@ -271,6 +311,7 @@ class Lyrics2PptxHandler(BaseHTTPRequestHandler):
         if not isinstance(raw_text, str):
             raise ConfigError("raw_text 는 문자열이어야 합니다")
         dedupe = bool(payload.get("dedupe_chorus", False))
+        slide_index = pipeline.resolve_slide_index(payload.get("slide_index"))
         result = pipeline.preview(raw_text, dedupe_chorus=dedupe)
         self._send_json(
             200,
@@ -278,6 +319,7 @@ class Lyrics2PptxHandler(BaseHTTPRequestHandler):
                 "lines": list(result.lines),
                 "pairs": [[first, second] for first, second in result.pairs],
                 "removed_marker_count": result.removed_marker_count,
+                "slide_index": slide_index,
             },
         )
 
@@ -289,6 +331,7 @@ class Lyrics2PptxHandler(BaseHTTPRequestHandler):
         index = _coerce_int(payload.get("index", 0), 0)
         dedupe = bool(payload.get("dedupe_chorus", False))
         filename = payload.get("filename") or config.DEFAULT_FILENAME
+        slide_index = pipeline.resolve_slide_index(payload.get("slide_index"))
 
         if raw_text is not None and not isinstance(raw_text, str):
             raise ConfigError("raw_text 는 문자열이어야 합니다")
@@ -310,6 +353,7 @@ class Lyrics2PptxHandler(BaseHTTPRequestHandler):
                 raw_text=raw_text,
                 lines=lines,
                 dedupe_chorus=dedupe,
+                slide_index=slide_index,
                 output_path=target,
             )
             try:

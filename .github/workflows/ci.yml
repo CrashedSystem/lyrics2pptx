@@ -1,0 +1,97 @@
+# lyrics2pptx — CI 파이프라인
+#
+# 단계: (lint/typecheck 없음) -> compileall(문법 검사) -> unittest(회귀 검증)
+#   * lint/typecheck 를 넣지 않은 근거: 린트/타입체커 미도입이 확정 사항이다
+#     (환경선언서.md §3 "린트: 없음 — stdlib 전용 원칙으로 ruff/flake8 미도입",
+#      mypy/pyright 도 설정 파일이 저장소에 없다). 없는 도구 단계를 억지로 만들지 않는다.
+#   * build/containerize/deploy 단계가 없는 근거: 배포 산출물이 없는 로컬 단일 사용자 도구다
+#     (docs/arch/08 §1 "별도 배포 없음. 소스 트리를 그대로 두고 두 진입점을 실행한다",
+#      컨테이너/설치 프로그램/서비스 등록은 계획서 01 의 비목표).
+#
+# 러너 선택 근거 (소스 확인 결과를 그대로 적는다):
+#   * src/lyrics2pptx/** 에 Windows 전용 API 가 없다: ctypes / winreg / msvcrt / os.name /
+#     sys.platform / subprocess / os.startfile / 하드코딩된 backslash 경로 사용 0건.
+#     유일한 백슬래시는 config._UNSAFE_NAME_CHARS = '/\\:*?"<>|' (파일명 금지 문자 목록)이며
+#     플랫폼 분기가 아니다.
+#   * tests/** 도 플랫폼 의존이 없다: 경로는 pathlib + resolve()/parents, 임시 파일은 tempfile,
+#     소켓은 test_webapp 의 loopback(127.0.0.1, 임시 포트) 뿐이다.
+#   * 따라서 규칙대로 ubuntu-latest 를 쓴다. 단 scripts/run.ps1 은 Windows 전용 산출물이고
+#     CI 는 그것을 실행하지 않는다(= CI 가 검증하지 않는 Windows 전용 표면이 하나 있다).
+#     CI 가 run.ps1 을 검증해야 하거나 src/ 에 Windows 전용 기능이 들어오면
+#     아래 runs-on 을 windows-latest 로 바꾸는 한 줄 변경으로 대응한다.
+#
+# 이 워크플로가 성립하기 위한 전제 (테스트 코드는 수정하지 않고 읽어서 확인한 사실):
+#   * 저장소 루트의 template.pptx(20장) 를 요구하는 테스트가 있다:
+#     test_clone / test_fill / test_builder / test_template_reader / test_writer_contract 는
+#     "템플릿 없음"을 SkipTest 로 처리하지만, test_cli(DoctorTests 의 slide_count=20 단언)와
+#     test_webapp / BuildSuccessTests 계열은 skip 가드가 없어 템플릿이 없으면 실패한다.
+#     => 템플릿 부재는 "스킵"이 아니라 "실패"다. .gitignore 는 template.pptx 를 커밋 대상으로
+#        유지하고(!template.pptx), 아래 사전 점검 단계에서 그 사실을 명시적으로 확인한다.
+#   * 외부 네트워크를 여는 테스트는 없다: crawl.httputil 의 transport 는 모두 모킹되고, 어댑터는
+#     tests/fixtures 의 저장 응답을 읽는다(fixture 모드). 실 소켓은 loopback 뿐이다.
+#   * LYRICS2PPTX_* 환경변수를 일부러 설정하지 않는다: tests/test_config.py 가 기본값을 그대로
+#     단언하기 때문이다(환경변수를 넣으면 기본값 검증이 깨진다). 테스트는 필요한 값을 스스로
+#     mock.patch 로 주입한다.
+#
+# 액션 버전: GitHub API 로 실재를 확인한 태그에 고정했다(추측 태그 금지).
+#   actions/checkout@v7.0.1, actions/setup-python@v7.0.0
+#   (참고: 저장소 규약 문서에 적힌 setup-python@v5 도 실재하는 태그이지만 3개 메이저 뒤처짐이라
+#    현재 지원 버전 대신 최신 태그로 고정했다. 되돌리려면 이 두 줄만 낮추면 된다.)
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# 최소 권한: 이 워크플로는 저장소를 읽기만 한다.
+permissions:
+  contents: read
+
+# 같은 ref 의 이전 실행을 취소해 큐 적체를 막는다.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: test (ubuntu-latest / Python 3.12)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v7.0.0
+        with:
+          python-version: "3.12" # pyproject.toml requires-python >=3.12, 런타임 실측 3.12.10
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      # 선언된 설치 명령 그대로 (환경선언서.md §3)
+      - name: Install dependencies
+        run: |
+          python -m pip install -r requirements.txt
+          python -m pip install -e .
+
+      # 테스트 코드를 고치지 않고도 실패 원인을 한 줄로 알기 위한 사전 점검.
+      # (템플릿 부재 시 test_cli/test_webapp 이 "스킵"이 아니라 "실패"하기 때문)
+      - name: Precondition — template.pptx present (20 slides expected)
+        run: |
+          if [ ! -f template.pptx ]; then
+            echo "::error file=template.pptx::template.pptx is missing. tests/test_cli.py (doctor: slide_count=20), tests/test_webapp.py and the build tests require it in the repository root; removing it turns these into failures, not skips."
+            exit 1
+          fi
+          echo "template.pptx present: $(stat -c%s template.pptx) bytes"
+
+      # 정적 검사: 파이썬 문법/컴파일 (린터 미도입 → compileall 이 유일한 정적 게이트)
+      - name: Compile check
+        run: python -m compileall -q src tests
+
+      # 회귀 검증: 네트워크 0회, 결정적 (fixture/mock 기반)
+      - name: Tests
+        run: python -m unittest discover -s tests -t .

@@ -1,0 +1,260 @@
+/* 가사 2줄 PPTX 생성기 — 로컬 단일 페이지 UI 스타일. */
+
+:root {
+  --bg: #f5f6f8;
+  --panel: #ffffff;
+  --border: #d8dce3;
+  --text: #1f2430;
+  --muted: #6b7280;
+  --accent: #2f6fed;
+  --accent-dark: #2258c8;
+  --error-bg: #fdecec;
+  --error-text: #b3261e;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Malgun Gothic", "맑은 고딕", system-ui, -apple-system, sans-serif;
+  line-height: 1.55;
+}
+
+.app-header {
+  padding: 28px 20px 16px;
+  max-width: 860px;
+  margin: 0 auto;
+}
+
+.app-header h1 {
+  margin: 0 0 6px;
+  font-size: 1.6rem;
+}
+
+.subtitle {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.95rem;
+}
+
+.subtitle code {
+  background: #eceff4;
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 0.9em;
+}
+
+.app-main {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 0 20px 40px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 18px 20px;
+}
+
+.panel h2 {
+  margin: 0 0 12px;
+  font-size: 1.1rem;
+}
+
+.mode-row,
+.options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  align-items: center;
+}
+
+.mode-body {
+  margin-top: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.field-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.field-row.inline {
+  gap: 8px;
+}
+
+.field-label {
+  min-width: 68px;
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+
+input[type="text"],
+select,
+textarea {
+  flex: 1;
+  padding: 9px 11px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  font: inherit;
+  color: inherit;
+  background: #fff;
+}
+
+textarea {
+  resize: vertical;
+  width: 100%;
+}
+
+input[type="text"]:focus,
+select:focus,
+textarea:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+button {
+  padding: 9px 16px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: #fff;
+  font: inherit;
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  background: #f0f2f6;
+}
+
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-weight: 600;
+}
+
+button.primary:hover:not(:disabled) {
+  background: var(--accent-dark);
+  border-color: var(--accent-dark);
+}
+
+button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.radio,
+.checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  cursor: pointer;
+  font-size: 0.95rem;
+}
+
+.result-list,
+.preview-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.result-item {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.result-preview {
+  margin: 6px 0 0 26px;
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
+.artist {
+  color: var(--muted);
+}
+
+.summary {
+  margin: 0 0 10px;
+  font-weight: 600;
+}
+
+.preview-list li {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  padding: 8px 12px;
+  background: #f7f8fb;
+  border-radius: 7px;
+}
+
+.slide-number {
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  font-size: 0.8rem;
+  text-align: center;
+  line-height: 24px;
+}
+
+.pager {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 12px 0;
+}
+
+.page-label {
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
+.download a {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.error {
+  margin: 0;
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: var(--error-bg);
+  color: var(--error-text);
+  font-size: 0.93rem;
+}
+
+.status {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.app-footer {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 0 20px 40px;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.app-footer p {
+  margin: 4px 0;
+}

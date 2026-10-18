@@ -1,0 +1,4 @@
+# 오프라인 fixture 보관 위치 (T02/T08 에서 내용 추가).
+# - lyrics_sample.txt        T02  정규화 입력 원문 가사
+# - lyrics_ovh_sample.json   T08  저장된 검색 응답
+# - not_found.json           T08  미발견 응답

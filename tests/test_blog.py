@@ -422,6 +422,59 @@ class CommentAndMarkerTests(unittest.TestCase):
             )
 
 
+class QuotedBlockTests(unittest.TestCase):
+    """A page that quotes a whole stanza in parentheses wraps the *quotation*.
+
+    A cafe post that translates a hymn prints the translation inside one pair of
+    parentheses, so the first line began with ``(`` and the last ended with ``)``
+    and the deck for "Great Is Thy Faithfulness" printed both characters as
+    lyrics (조사보고서 §17.6, 13).
+    """
+
+    QUOTED = """<html><body><article>
+    <p>-- Great Is Thy Faithfulness (번역) --</p>
+    <p>(주님의 불변하신 사랑은 결코 그치지 않으시네</p>
+    <p>그분의 자비하심은 결코 끝나지 않으시니</p>
+    <p>새로운 날마다의 아침, 새로운 날마다의 아침이여</p>
+    <p>당신의 신실하심은 위대하심이여 오 주님</p>
+    <p>당신의 신실하심은 위대하심이여</p>
+    <p>주님의 불변하신 사랑은 결코 그치지 않으시네</p>
+    <p>그분의 자비하심은 결코 끝나지 않으시니)</p>
+    </article></body></html>
+    """
+
+    # One bracket pair inside the run, but nothing wraps the run itself.
+    UNWRAPPED = """<html><body><article>
+    <p>(주 말씀이 선포되고</p>
+    <p>또 주의 종 모세의 때와 같이</p>
+    <p>사랑해요 (사랑해요 영원히)</p>
+    <p>언약이 성취되네</p>
+    <p>에스겔의 환상처럼</p>
+    <p>마른 뼈가 살아나며</p>
+    <p>예배가 회복되네</p>
+    </article></body></html>
+    """
+
+    def test_the_wrapping_bracket_pair_is_removed(self) -> None:
+        self.assertEqual(
+            blog.extract_lyrics(self.QUOTED),
+            (
+                "주님의 불변하신 사랑은 결코 그치지 않으시네",
+                "그분의 자비하심은 결코 끝나지 않으시니",
+                "새로운 날마다의 아침, 새로운 날마다의 아침이여",
+                "당신의 신실하심은 위대하심이여 오 주님",
+                "당신의 신실하심은 위대하심이여",
+                "주님의 불변하신 사랑은 결코 그치지 않으시네",
+                "그분의 자비하심은 결코 끝나지 않으시니",
+            ),
+        )
+
+    def test_a_bracket_that_does_not_wrap_the_run_stays(self) -> None:
+        lines = blog.extract_lyrics(self.UNWRAPPED)
+        self.assertEqual(lines[0], "(주 말씀이 선포되고")
+        self.assertIn("사랑해요 (사랑해요 영원히)", lines)
+
+
 class StripHeadingsTests(unittest.TestCase):
     def test_leading_title_and_heading_are_removed(self) -> None:
         lines = ("가사", "지금은 엘리야 때처럼", "주 말씀이 선포되고")

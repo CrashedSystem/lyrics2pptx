@@ -514,3 +514,98 @@ class WrappingTests(unittest.TestCase):
         for entry in consensus.entries:
             self.assertNotIn("여호와의 영광을 인정하는 것이 땅에 가득하리라", entry.variants)
 
+
+class SplitFragmentTests(unittest.TestCase):
+    """A page that splits one position in two prints no new verse (ADR-031).
+
+    「주 하나님 지으신 모든 세계」's anchor joined the hymn's first two rows
+    ("주 하나님 지으신 모든 세계 내 마음 속에 그리어볼 때") the way four pages did,
+    and a fifth printed the two halves alone. The half arrived as an extra verse
+    and the deck ended with a sixth slide that repeated the first half of slide 1
+    (조사보고서 §17.6).
+    """
+
+    ANCHOR = (
+        "주 하나님 지으신 모든 세계 내 마음 속에 그리어볼 때",
+        "하늘의 별 울려퍼지는 뇌성 주님의 권능 우주에 찼네",
+        "주님의 높고 위대하심을 내 영혼이 찬양하네",
+        "나 겸손히 엎드려 경배하며 영원히 주를 찬양하리라",
+    )
+    # The hymnal's own shape: one row per pair of the publisher's lines.
+    SPLIT = (
+        "주 하나님 지으신 모든 세계",
+        "내 마음 속에 그리어볼 때",
+        "하늘의 별 울려퍼지는 뇌성",
+        "주님의 권능 우주에 찼네",
+        "주님의 높고 위대하심을 내 영혼이 찬양하네",
+        "나 겸손히 엎드려 경배하며 영원히 주를 찬양하리라",
+    )
+
+    def test_a_split_half_does_not_become_a_last_slide(self) -> None:
+        consensus = cross_check(
+            [
+                Transcript("anchor1", self.ANCHOR),
+                Transcript("anchor2", self.ANCHOR),
+                Transcript("anchor3", self.ANCHOR),
+                Transcript("split1", self.SPLIT),
+                Transcript("split2", self.SPLIT),
+            ]
+        )
+        self.assertEqual(consensus.lines, self.ANCHOR)
+        entry = _entry(consensus, self.ANCHOR[0])
+        self.assertEqual(entry.support, 3)
+        self.assertEqual(
+            entry.variants,
+            ("주 하나님 지으신 모든 세계", "내 마음 속에 그리어볼 때"),
+        )
+        self.assertEqual(
+            _entry(consensus, self.ANCHOR[1]).variants,
+            ("하늘의 별 울려퍼지는 뇌성", "주님의 권능 우주에 찼네"),
+        )
+
+
+class AnchorEdgeChromeTests(unittest.TestCase):
+    """The anchor's own trailing furniture is trimmed even when extras follow.
+
+    A blog prints its own name (그리심산) in the widget right below the article, so
+    한나의 노래's anchor ended with it — and two more verses arrived from the other
+    pages, which print the song twice. Appending those after the name made it an
+    interior line and the edge trim no longer reached it, so the deck carried the
+    blog's own name as slide 6 (조사보고서 §17.6, 08).
+    """
+
+    LYRICS = (
+        "어제와 다른 괴롬과 슬픔",
+        "깊은 탄식에 기도할 수 없고",
+        "처연한 내 안의 속사람은",
+        "주를 보지만 말하지 못하네",
+        "주의 사랑이 목마름 채우고",
+        "주의 위로가 눈물을 닦으니",
+    )
+    EXTRAS = ("주님의 은혜가 필요한 이 땅에서", "이곳에서 주와 함께 노래하리라")
+
+    def test_the_anchor_tail_furniture_is_dropped_when_extras_follow(self) -> None:
+        repeated = self.LYRICS + self.EXTRAS + self.LYRICS
+        consensus = cross_check(
+            [
+                Transcript("anchor", self.LYRICS + ("그리심산",)),
+                Transcript("plain1", repeated),
+                Transcript("plain2", repeated),
+                Transcript("plain3", repeated),
+            ]
+        )
+        self.assertEqual(consensus.lines, self.LYRICS + self.EXTRAS)
+        self.assertNotIn("그리심산", consensus.lines)
+
+    def test_an_interior_single_page_line_is_still_kept(self) -> None:
+        """Interior one-off lines are a genuine extra verse, not furniture (ADR-020)."""
+        doubled = self.LYRICS * 2
+        consensus = cross_check(
+            [
+                Transcript("anchor", self.LYRICS[:2] + ("오직 주의 은혜",) + self.LYRICS[2:]),
+                Transcript("plain1", doubled),
+                Transcript("plain2", doubled),
+            ]
+        )
+        self.assertIn("오직 주의 은혜", consensus.lines)
+

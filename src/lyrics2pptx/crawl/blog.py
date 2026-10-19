@@ -173,6 +173,14 @@ _MIN_VERSE_LINES = 3
 #: tokens) is collapsed, which leaves a short repeat like "사랑해 사랑해" alone.
 _DOUBLED_MIN_TOKENS = 4
 
+#: Pairs of brackets that can wrap a *whole* quoted block. A cafe post that
+#: translates a hymn prints the translation inside one pair of parentheses
+#: ("(주님의 불변하신 사랑은 결코 그치지 않으시네 … 당신의 신실하심은 위대하심이여)"),
+#: and both brackets reached the deck as lyric characters (조사보고서 §17.6, 13).
+#: Only the outer pair is removed, so a genuine parenthetical inside a line
+#: ("(사랑해요 영원히)") is untouched.
+_BLOCK_BRACKETS = {"(": ")", "（": "）"}
+
 
 def _collapse_duplicate_phrase(line: str) -> str:
     """Collapse ``A A`` (sync-format duplication) into ``A``; else return ``line``."""
@@ -199,6 +207,33 @@ def _collapse_duplicated_block(lines: list[str]) -> list[str]:
             break
         lines = lines[:half]
     return lines
+
+
+def _strip_block_brackets(lines: list[str]) -> list[str]:
+    """Remove the one bracket pair that wraps the whole run.
+
+    A cafe post that translates a hymn quotes the translation inside a single
+    pair of parentheses, so the first line begins with ``(`` and the last ends
+    with ``)`` and both reached the deck (조사보고서 §17.6, 13). The pair is
+    removed only when it actually wraps the run — both ends present and balanced,
+    or the closer alone was dropped as a separator line — so a line that merely
+    starts with a bracket keeps it.
+    """
+    if len(lines) < 2:
+        return lines
+    closer = _BLOCK_BRACKETS.get(lines[0][:1])
+    if closer is None:
+        return lines
+    body = "".join(lines)
+    if lines[-1].endswith(closer) and body.count(lines[0][0]) == body.count(closer):
+        inner = [lines[0][1:].strip(), *lines[1:-1], lines[-1][:-1].strip()]
+    elif body.count(closer) == 0 and body.count(lines[0][0]) == 1:
+        inner = [lines[0][1:].strip(), *lines[1:]]
+    else:
+        return lines
+    if not inner[0] or not inner[-1]:
+        return lines
+    return inner
 
 
 def _to_lines(page: str) -> list[tuple[str, bool]]:
@@ -308,6 +343,7 @@ def extract_lyrics(page: str, *, min_lines: int = 6) -> tuple[str, ...]:
         current = []
     if len(current) > len(best):
         best = current
+    best = _strip_block_brackets(best)
     best = _collapse_duplicated_block(best)
     if len(best) < max(1, min_lines):
         return ()

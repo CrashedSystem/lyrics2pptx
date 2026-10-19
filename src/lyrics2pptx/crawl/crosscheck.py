@@ -92,6 +92,11 @@ _SHINGLE = 5
 #: writes positions nobody else votes for.
 _LENGTH_WINDOW = (0.6, 1.7)
 
+#: Shortest key that may be called a fragment of another line. Below this a
+#: phrase is too common ("주님", "은혜") for the prefix/suffix test to mean "the
+#: same words" rather than a genuine short line (ADR-031).
+_MIN_FRAGMENT_KEY = 6
+
 #: The reference must carry at least this share of the richest page's text
 #: (character shingles) before it may define the shape of the deck: a
 #: chorus-only fragment must not become the lyrics.
@@ -466,6 +471,25 @@ def _joined_pair(key: str, keys: Sequence[str], index: int) -> tuple[int, int] |
     return None
 
 
+def _trim_chrome_edges(entries: list[LineConsensus], total: int) -> list[LineConsensus]:
+    """Drop one-sided lines at the deck's two edges (reference chrome).
+
+    A blog prints its own name and its share buttons right below the article, so
+    the *reference* transcript usually ends with furniture the other pages never
+    carried; the same holds for its top ("by 작성자", "공유하기"). Such a line has a
+    support of one and no position, so the edge is where it is dropped — interior
+    one-off lines are kept, because they are usually a genuine extra verse
+    (ADR-020). ``total >= 3`` guards the case where only two pages voted.
+    """
+    if total < 3:
+        return entries
+    while entries and entries[0].support < 2:
+        entries.pop(0)
+    while entries and entries[-1].support < 2:
+        entries.pop()
+    return entries
+
+
 def _vote(pairs: Sequence[tuple[str, str]], *, ref_key: str, total: int) -> LineConsensus:
     """Turn ``(key, spelling)`` pairs for one position into a consensus entry."""
     counts = Counter(key for key, _ in pairs)
@@ -581,6 +605,7 @@ def cross_check(
     removed: set[int] = set()
     extras: dict[str, list[tuple[str, str]]] = {}
     extra_order: list[str] = []
+    extra_indices: list[int] = []
     for key, occurrences in unmatched.items():
         distinct = {source for source, _line, _gap in occurrences}
         gaps = {gap for _source, _line, gap in occurrences}
@@ -643,6 +668,18 @@ def cross_check(
             )
         entries = rebuilt
 
+    # Trim the reference's own trailing furniture *before* the voted extras are
+    # appended. A blog prints its own name right below the article, so the
+    # reference's last line is often furniture — but appending the extras after it
+    # made that line interior, where the edge trim no longer reached it: 한나의 노래
+    # printed the blog's own name (그리심산) as slide 6 (조사보고서 §17.6). Only the
+    # tail is pre-trimmed: extras are appended at the end, so they can only shield
+    # the tail, and the head is left for the trim that runs after the merging pass
+    # (which can fold a leading line into a variant instead of losing it).
+    if total >= 3:
+        while entries and entries[-1].support < 2:
+            entries.pop()
+
     for key in extra_order:
         occurrences = extras[key]
         distinct = {source for source, _ in occurrences}
@@ -652,6 +689,7 @@ def cross_check(
         entries.append(
             LineConsensus(text=text, support=len(distinct), total=total, variants=())
         )
+        extra_indices.append(len(entries) - 1)
 
     # A wrapping difference usually leaves the joined text between two positions
     # (handled above), but a page can also print a verse's rows two at a time — a
@@ -661,14 +699,42 @@ def cross_check(
     # later sang "주 나의 모습 보네" / "상한 나의 맘 보시네": the same words twice
     # (조사보고서 §16.4(5)). The pair is not always next to each other either —
     # 「아무것도 두려워 말라」 wrote a verse line together with the chorus line
-    # that follows it. When the pair is the reading the pages agree on (both parts
-    # at least as agreed as the joined line), the joined line is dropped and
-    # reported as the first part's other rendering; a tie keeps both so no reading
-    # is lost (ADR-029). This runs *after* the extra verses are appended, because
-    # the parts may be the extras rather than the positions.
+    # that follows it. When the pair is what most pages print (each part carried
+    # by at least two pages and stronger than the joined line) the joined line is
+    # dropped and reported as the first part's other rendering; when the joined
+    # line is the stronger reading it replaces the pair instead. A tie keeps both
+    # so no reading is lost (ADR-029). This runs *after* the extra verses are
+    # appended, because the parts may be the extras rather than the positions.
     keys = [line_key(entry.text) for entry in entries]
     drop: set[int] = set()
     spellings: dict[int, list[str]] = {}
+
+    # An extra verse whose key is the leading or trailing part of a line already
+    # in the deck is the *same words*: the page that printed it split one
+    # position into two (the mirror of the joining ADR-029 handles). Four pages
+    # of 「주 하나님 지으신 모든 세계」 printed "주 하나님 지으신 모든 세계 내 마음
+    # 속에 그리어볼 때" as one line while a fifth printed the two halves alone, so
+    # the deck ended with a last slide that repeated the first half of slide 1
+    # (조사보고서 §17.6). The fragment is dropped only when the line that carries
+    # it is the stronger reading, so the majority never loses words; its text
+    # stays visible as that line's other rendering.
+    for index in extra_indices:
+        if index in drop or len(keys[index]) < _MIN_FRAGMENT_KEY:
+            continue
+        owner: int | None = None
+        for other, other_key in enumerate(keys):
+            if other == index or len(other_key) <= len(keys[index]):
+                continue
+            if not (other_key.startswith(keys[index]) or other_key.endswith(keys[index])):
+                continue
+            if entries[other].support <= entries[index].support:
+                continue
+            if owner is None or entries[other].support > entries[owner].support:
+                owner = other
+        if owner is not None:
+            spellings.setdefault(owner, []).append(entries[index].text)
+            drop.add(index)
+
     for index, entry in enumerate(entries):
         if index in drop or not keys[index]:
             continue
@@ -716,14 +782,11 @@ def cross_check(
             kept.append(entry)
         entries = kept
 
-    # Trim chrome that only the reference carried at the very edges ("by 작성자",
-    # "공유하기", a blog tagline). Interior one-off lines are kept: they are
-    # usually a genuine extra verse rather than page furniture.
-    if total >= 3:
-        while entries and entries[0].support < 2:
-            entries.pop(0)
-        while entries and entries[-1].support < 2:
-            entries.pop()
+    # Trim again: the merging pass above can *expose* a new edge by dropping the
+    # lines that sat outside it. 「주 은혜임을」 led with a six-line summary block;
+    # once ADR-029 removed it, three one-support summary lines stood at the deck's
+    # front and only a trim that runs after the merge takes them off.
+    entries = _trim_chrome_edges(entries, total)
 
     return Consensus(
         entries=tuple(entries),

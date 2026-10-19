@@ -62,8 +62,9 @@ def _respect_delay(url: str) -> None:
 | robots 캐시 | 호스트별 10분 TTL | 반복 조회 방지 |
 | UA | 상수 1곳. 브라우저 위장 금지 | 계획서 03 |
 | 지연 | 호스트별 직전 요청 기준 간격 확보(고정 sleep 이 아님) | 요청 수와 무관하게 예절 보장 |
-| 재시도 | 429/5xx/타임아웃만, 최대 3, `1s→2s→4s` | 계획서 03 §실패 분류 |
+| 재시도 | 429/5xx/타임아웃만, 최대 3, `1s→2s→4s` (`retries=0` 호출별 예외) | 계획서 03 §실패 분류 |
 | 404/403 | **재시도 없이** `SourceBlockedError` | 재시도 무의미 |
+| lrclib 예산 | 곡당 총 10초 데드라인 + `retries=0` | 폴백이 체인을 붙잡지 않게 (ADR-030) |
 | 검색 색인 | robots 허용 엔진만(`ddg` html/lite). `naver`(openapi·search) 는 `Disallow: /` 라 **미탑재** | ADR-018 |
 
 **강제의 핵심**: 어댑터(`lyrics_ovh`, `lrclib`, `blog`, `html_generic`)와 검색 백엔드(`ddg`)는 `urllib` 을 직접 import 하지 않는다(P7).

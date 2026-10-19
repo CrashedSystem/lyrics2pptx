@@ -5,7 +5,7 @@
 서버·클라우드·계정이 필요 없고, 실행은 Windows 로컬 프로세스 하나와 로컬 웹서버(127.0.0.1)뿐이다.
 템플릿은 **읽기 전용 입력**으로만 열리며 절대 수정되지 않는다.
 
-> 상태: `src/`+`web/` 구현 완료. 테스트 `473 tests OK`. 진입점 `python -m lyrics2pptx.cli` / `python -m lyrics2pptx.webapp` / 더블클릭 `lyrics2pptx.vbs`. 기본 수집 소스는 `auto`(lrclib → 블로그 교차검증, ADR-018).
+> 상태: `src/`+`web/` 구현 완료. 테스트 `511 tests OK`. 진입점 `python -m lyrics2pptx.cli` / `python -m lyrics2pptx.webapp` / 더블클릭 `lyrics2pptx.vbs`. 기본 수집 소스는 `auto`(① blog 교차검증 → ② lrclib → ③ blog 미검증, ADR-025)이고 가사는 한글 우선이다(ADR-026). 폴백 소스 lrclib 은 곡당 총 10초 안에 답하거나 포기한다(ADR-030).
 
 ---
 
@@ -21,7 +21,8 @@ python -m pip install -e .
 # 2) 실행 전 자가진단 (파일을 만들지 않음)
 python -m lyrics2pptx.cli --doctor
 
-# 3a) 검색어로 생성 (기본 소스 = auto: lrclib → 블로그 교차검증, 네트워크 필요)
+# 3a) 검색어로 생성 (기본 소스 = auto: ① blog 교차검증 → ② lrclib → ③ blog 미검증,
+#     blog·lrclib 은 동시에 조회하고 **한글 가사 후보를 먼저** 본다 — 네트워크 필요)
 python -m lyrics2pptx.cli --query "아티스트 - 곡명"
 
 # 3a-1) 합의 가사를 만들지 않고 교차검증 결과만 확인 (빌드 안 함)
@@ -75,9 +76,9 @@ Windows 한국어 콘솔(cp949)에서는 위 명령의 한글이 깨질 수 있�
 | `--input-file PATH` | 직접 입력 텍스트(UTF-8). 정규화(N1~N11, 추임새 제거 포함) 적용 |
 | `--lines-file PATH` | 이미 정리된 줄 파일(한 줄 = 한 문장). 정규화 생략 |
 | `-o`, `--output PATH` | 출력 경로 (기본 `output\<제목>.pptx`) |
-| `--source NAME` | 수집 소스 이름: `auto`(기본)·`blog`·`lrclib`·`lyrics_ovh` |
+| `--source NAME` | 수집 소스 이름: `auto`(기본)·`blog`·`lrclib`·`lyrics_ovh`. `auto` 순서: ① blog 교차검증 → ② lrclib → ③ blog 미검증(ADR-025) |
 | `--index N` | 검색 결과 중 선택할 번호 (기본 `0`; `blog` 는 `0`=합의 가사, `1`~=개별 페이지 `호스트 · N줄`, 투표에서 빠진 페이지는 `(투표 제외)`) |
-| `--cross-check` | `--query` 로 블로그를 수집·교차검증해 **합의 줄 + 지지수 + 다른 표기**만 출력 (빌드 안 함). 2장 미만이 투표하면 "교차검증 안 됨"으로 정직하게 보고한다(ADR-020) |
+| `--cross-check` | `--query` 로 블로그를 수집·교차검증해 **합의 줄 + 지지수 + 다른 표기**만 출력 (빌드 안 함). 머리줄에 **가사 언어**(`· 한글`/`· 원어`)를 표시한다(ADR-026). 2장 미만이 투표하면 "교차검증 안 됨"으로 정직하게 보고한다(ADR-020) |
 | `--dedupe-chorus` | 후렴 등 3회 이상 반복 줄을 2회까지만 유지 |
 | `--skip-slide N` | 배경 풀에서 제외할 템플릿 슬라이드 번호(1-based, 반복 가능) |
 | `--keep-notes` | 템플릿 노트(noteSlide)도 복제 (기본: 복제 안 함) |
@@ -108,6 +109,13 @@ Windows 한국어 콘솔(cp949)에서는 위 명령의 한글이 깨질 수 있�
 > 성경 구절과 제목이 같은 곡처럼 **함정이 있는 검색어**는 성경/목록 페이지를 후보에서 걸러내고(ADR-020),
 > 실제로 투표한 페이지가 2장 미만이면 `교차검증 안 됨` 으로 표시한다 — 「정금같이 나오리라」 실측 참조.
 
+> **수집 우선순위와 언어 (ADR-025·026·030)**: `auto` 는 ① 블로그 합의(교차검증 성립) → ② lrclib → ③ 교차검증
+> 안 된 블로그 순으로 보고, 블로그와 lrclib 을 **동시에** 조회한다(지연 = 둘 중 긴 쪽). lrclib 은 폴백이라
+> 곡당 총 10초(`LYRICS2PPTX_LRCLIB_TIMEOUT`)에서 끊고 blog 는 재시도를 유지한다. 후보군은 **한글 가사
+> 먼저**, 한글이 하나도 없을 때만 원어로 간다. 고른 언어는 결과에 보인다 — `--cross-check` 머리줄이
+> `· 한글`/`· 원어`, `--json` 이 후보마다 `"korean": true|false`. 근거 실측은 `조사보고서.md §16`(21곡 스윕)과
+> `§17`(수정 후 재실행).
+
 ---
 
 ## 3. 웹 UI 사용법
@@ -120,7 +128,7 @@ python -m lyrics2pptx.webapp        # 또는: .\scripts\run.ps1 -Web   또는: w
 화면 흐름: **(1) 가사 가져오기**(검색 / 직접 입력) → **(2) 곡 선택** → **(3) 미리보기**
 → **(4) 다운로드**. 직접 입력 모드의 미리보기는 서버(`POST /api/preview`)가 계산한 값을
 그대로 보여 주므로 **미리보기와 실제 파일이 어긋나지 않는다**. 검색 모드의 기본 소스는
-`auto`(lrclib → 블로그 교차검증)이며 드롭다운에서 `blog`·`lrclib`·`lyrics_ovh` 로 바꿀 수 있다.
+`auto`(① blog 교차검증 → ② lrclib → ③ blog 미검증, ADR-025)이며 드롭다운에서 `blog`·`lrclib`·`lyrics_ovh` 로 바꿀 수 있다.
 `blog` 의 결과 `0`번은 **합의 가사**, 그 뒤는 개별 페이지 전사본이다(ADR-018).
 
 검색 중에는 화면 하단에 **진행 카드**가 고정된다(ADR-019): 지금 무엇을 하는지(단계 목록),
@@ -191,6 +199,7 @@ venv → `py -3.12` → `python` 순으로 인터프리터를 찾는다. 미설�
 | `LYRICS2PPTX_BLOG_MAX_PAGES` | int | `5` | config, crawl/blog |
 | `LYRICS2PPTX_HTTP_DELAY` | float(초) | `2.0` | httputil |
 | `LYRICS2PPTX_HTTP_TIMEOUT` | float(초) | `10` | httputil |
+| `LYRICS2PPTX_LRCLIB_TIMEOUT` | float(초) | `10` | config, crawl/lrclib (ADR-030) |
 | `LYRICS2PPTX_MAX_RETRIES` | int | `3` | httputil |
 | `LYRICS2PPTX_USER_AGENT` | str | `lyrics2pptx/0.1 (+local single-user tool)` | httputil |
 | `LYRICS2PPTX_BIND_HOST` | str | `127.0.0.1` | webapp |
@@ -227,7 +236,7 @@ lyrics/
                            blog, crosscheck, chain, websearch/{base,ddg})
     text/                  정규화/2줄 분할 (normalize, split)
     pptx/                  템플릿 읽기·복제·채우기·쓰기 (writer*, builder, clone, fill…)
-  tests/                   473 tests (표준 unittest)
+  tests/                   511 tests (표준 unittest)
   docs/plan/ docs/arch/     설계 문서 · docs/guide/ 사용가이드 · docs/adr/ 결정 기록
 ```
 
@@ -239,8 +248,8 @@ lyrics/
 python -m unittest discover -s tests -t .
 ```
 
-검증된 결과(실제 실행): `Ran 473 tests … OK`, exit 0. 네트워크 실호출 0회이며 collect 단계는
-fixture/mock 으로 격리된다. `.\scripts\run.ps1 -Test` 도 동일하게 473 tests / OK / exit 0.
+검증된 결과(실제 실행): `Ran 511 tests … OK`, exit 0. 네트워크 실호출 0회이며 collect 단계는
+fixture/mock 으로 격리된다. `.\scripts\run.ps1 -Test` 도 동일하게 511 tests / OK / exit 0.
 
 정적 게이트:
 
@@ -271,11 +280,21 @@ fixture/mock 으로 격리된다. `.\scripts\run.ps1 -Test` 도 동일하게 473
 
 ## 9. 알려진 한계
 
-- **기본 검색 소스(`lrclib.net`)도 커버리지가 100%는 아니다.** literal substring 검색이라
-  아티스트로 찾으면 강하지만(어노인팅·마커스워십·손경민·예람워십 실측), 「생명샘」처럼 DB에 없는
-  곡은 찾지 못한다. 그럴 때는 **직접 입력**을 쓴다(`--input-file` / 웹 UI 직접 입력). 부하 시
-  `503` 이 잦지만 재시도 레이어(1·2·4초)가 흡수한다. 다른 소스는 `crawl/<site>.py` 추가 +
-  `SOURCES` 한 줄로 확장한다(단, robots.txt/약관 확인 필수).
+- **`auto` 의 첫 후보는 이제 lrclib 이 아니라 블로그 교차검증 합의다**(ADR-025). 순서는 ① blog 교차검증 →
+  ② lrclib → ③ blog 미검증이고, blog 와 lrclib 은 **동시에** 조회한다(지연 = 둘 중 긴 쪽). 그래서 lrclib 의
+  커버리지 한계(「생명샘」처럼 DB에 없는 곡)가 곧바로 실패로 이어지지 않는다. lrclib 은 ② 계층(폴백)이라
+  **곡당 총 10초**(`LYRICS2PPTX_LRCLIB_TIMEOUT`, ADR-030) 안에 답하지 못하면 포기하고 blog 로 내려간다 —
+  죽은 폴백이 체인을 붙잡지 않는다(재시도 없이 한 번만 시도). 그래도 아무 소스에도 없으면 **직접 입력**을 쓴다
+  (`--input-file` / 웹 UI 직접 입력).
+  다른 소스는 `crawl/<site>.py` 추가 + `SOURCES` 한 줄로 확장한다(robots.txt/약관 확인 필수).
+- **가사 언어는 한글이 먼저다**(ADR-026). 후보를 한글/원어 후보군으로 나눠 한글이 하나라도 있으면 그쪽만 보고,
+  하나도 없을 때만 원어로 간다(`--lang` 스위치는 없다). 고른 언어는 `--cross-check` 머리줄(`· 한글`/`· 원어`)과
+  `--json` 후보의 `"korean"` 으로 보인다.
+- **글·댓글·표지가 가사에 섞이는 결함은 21곡 스윕으로 분류해 고쳤다**(`조사보고서.md §16`·`§17`): 사이드바
+  댓글은 앵커(`⋯`)를 줄 단위로 추적해 배제하고(ADR-027), 줄 머리의 절 번호(`1.`)·`후렴 :`·`[후렴]`·이모지
+  헤딩·`(새창열림)` 같은 크롬은 투표 **전에** 걷어낸다(ADR-028). 기준 페이지가 두 줄을 붙여 인쇄한 경우
+  (맨 위 요약 블록) 같은 말이 두 번 나오지 않도록 합의에서 결합 줄과 조각 줄 중 약한 쪽을 버리고 다른 표기로
+  남긴다(ADR-029).
 - **블로그 폴백(`blog`)은 만능이 아니다.** 검색 결과 품질에 의존하고, 가사를 **이미지로만** 올린
   페이지·JS 렌더링 페이지는 수집하지 못한다. 다수결도 항상 정답은 아니므로(2-2 동률·후렴 합치기)
   `--cross-check` 로 지지수와 **다른 표기**를 확인하고 필요하면 개별 페이지(`--index 1`~)를 고른다.

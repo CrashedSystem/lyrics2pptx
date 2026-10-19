@@ -34,7 +34,7 @@ L4 는 아무도 import 하지 않는다. L4 → L4 금지 (`cli` ↔ `webapp` �
 | `crawl/crosscheck.py` | L2 | 여러 전사본의 줄별 다수결(`Transcript`/`Consensus`), 순서 무관 최선매칭, **기준 전사본 선택**(노래를 한 번 인쇄한·다수와 같은 개행의 페이지, ADR-023), **같은 자리 다른 표기의 변형 처리**(ADR-024), **합의 성립 조건**(`MIN_SOURCE_COUNT`·`cross_checked`·`pages_seen`) | 네트워크, 파일 I/O, `text` 의존 |
 | `crawl/websearch/ddg.py` | L2 | DuckDuckGo HTML/lite 결과 파싱(색인 전용, 스니펫은 가사 아님) | 가사 판독(결과 페이지에서 읽음), robots 우회 |
 | `crawl/websearch/__init__.py` | L3 | 검색 백엔드 레지스트리(`ddg` 만), `get_backend` | 사이트별 수집 |
-| `crawl/chain.py` | L3 | `auto` 폴백 체인(lrclib → blog) + 오류 우선순위 | 개별 소스 내부 로직 |
+| `crawl/chain.py` | L3 | `auto` 폴백 체인(① blog 교차검증 → ② lrclib → ③ blog 미검증, ADR-025) + blog·lrclib **병렬 조회** + 오류 우선순위 + 한글 우선(ADR-026) + lrclib 곡당 총 10초 예산(ADR-030) | 개별 소스 내부 로직 |
 | `crawl/__init__.py` | L3 | `SOURCES` 레지스트리, `get_source(name)` | 파싱 로직 |
 | `text/normalize.py` | L2 | `str` → `list[str]` (N1~N11) | 슬라이드 페어링, pptx 접근 |
 | `text/split.py` | L2 | `list[str]` → `list[LinePair]` | pptx 접근, 파일 I/O |

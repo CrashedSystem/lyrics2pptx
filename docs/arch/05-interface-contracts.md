@@ -172,6 +172,7 @@ def resolve_output_path(output_path: Path | None, *, title: str | None) -> Path:
 | `LYRICS2PPTX_BLOG_MAX_PAGES` | int(1–10) | `5` | `config`, `blog` |
 | `LYRICS2PPTX_HTTP_DELAY` | float(초) | `2.0` | `httputil` |
 | `LYRICS2PPTX_HTTP_TIMEOUT` | float(초) | `10` | `httputil` |
+| `LYRICS2PPTX_LRCLIB_TIMEOUT` | float(초) | `10` | `config`, `crawl/lrclib` |
 | `LYRICS2PPTX_MAX_RETRIES` | int | `3` | `httputil` |
 | `LYRICS2PPTX_USER_AGENT` | str | `lyrics2pptx/0.1 (+local single-user tool)` | `httputil` |
 | `LYRICS2PPTX_BIND_HOST` | str | `127.0.0.1` | `webapp` |

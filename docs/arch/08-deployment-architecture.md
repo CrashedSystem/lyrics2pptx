@@ -20,7 +20,7 @@
 | 웹앱 | `python -m lyrics2pptx.webapp` | `http://127.0.0.1:8765`, Ctrl+C 종료 |
 | CLI | `python -m lyrics2pptx.cli --query "생명샘" -o output/song.pptx` | 파일 생성, 종료코드 |
 | 진단 | `python -m lyrics2pptx.cli --doctor` | 읽기 전용 리포트 |
-| 테스트 | `python -m unittest discover -s tests -t .` | 네트워크 0회, 473 tests OK |
+| 테스트 | `python -m unittest discover -s tests -t .` | 네트워크 0회, 511 tests OK |
 
 `python -m lyrics2pptx.X` 가 동작하려면 `src/` 가 import 경로에 있어야 한다. 두 가지 중 하나를 강제한다.
 
@@ -129,7 +129,7 @@ set PYTHONPATH=src
 set LYRICS2PPTX_FIXTURE_DIR=tests\fixtures
 python -m unittest discover -s tests -t .
 
-:: 네트워크 실호출 차단 상태로도 통과해야 한다 → 현재 473 tests OK
+:: 네트워크 실호출 차단 상태로도 통과해야 한다 → 현재 511 tests OK
 ```
 
 | 원칙 | 강제 |

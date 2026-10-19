@@ -31,6 +31,7 @@ __all__ = [
     "BLOG_MAX_PAGES",
     "HTTP_DELAY",
     "HTTP_TIMEOUT",
+    "LRCLIB_TIMEOUT",
     "MAX_RETRIES",
     "DEFAULT_UA",
     "BIND_HOST",
@@ -152,6 +153,12 @@ BLOG_MAX_PAGES = _env_int("LYRICS2PPTX_BLOG_MAX_PAGES", 5, minimum=1, maximum=10
 
 HTTP_DELAY = _env_float("LYRICS2PPTX_HTTP_DELAY", 2.0, minimum=0.0)
 HTTP_TIMEOUT = _env_float("LYRICS2PPTX_HTTP_TIMEOUT", 10.0, minimum=0.001)
+# ADR-030: ``auto`` asks blog and lrclib *concurrently* (ADR-025), and lrclib is
+# only a fallback behind the checked blog consensus. ``HTTP_TIMEOUT`` bounds a
+# single socket read, but ``MAX_RETRIES`` × fallback URLs let a dead lrclib hold
+# the whole chain for ~100 s. This caps lrclib's *entire* call instead: one
+# deadline for every URL, and no retries inside it.
+LRCLIB_TIMEOUT = _env_float("LYRICS2PPTX_LRCLIB_TIMEOUT", 10.0, minimum=0.001)
 MAX_RETRIES = _env_int("LYRICS2PPTX_MAX_RETRIES", 3, minimum=0, maximum=10)
 DEFAULT_UA = _env_str("LYRICS2PPTX_USER_AGENT", "lyrics2pptx/0.1 (+local single-user tool)")
 
@@ -191,6 +198,7 @@ _KNOWN_ENV = frozenset(
         "LYRICS2PPTX_BLOG_MAX_PAGES",
         "LYRICS2PPTX_HTTP_DELAY",
         "LYRICS2PPTX_HTTP_TIMEOUT",
+        "LYRICS2PPTX_LRCLIB_TIMEOUT",
         "LYRICS2PPTX_MAX_RETRIES",
         "LYRICS2PPTX_USER_AGENT",
         "LYRICS2PPTX_BIND_HOST",

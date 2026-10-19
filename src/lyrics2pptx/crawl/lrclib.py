@@ -25,6 +25,15 @@ Query interpretation (조사보고서 §5):
 4. Ranking is *not* trusted: every surviving candidate is returned in source
    order so the user picks (no silent auto-selection, 조사보고서 §5.4).
 
+Time budget (ADR-030): ``auto`` queries this adapter and ``blog``
+**concurrently** and only prefers the checked blog consensus (ADR-025), so a
+dead lrclib must not hold the chain. A live ``search`` therefore takes one
+deadline (``LYRICS2PPTX_LRCLIB_TIMEOUT``, default 10 s) that covers every URL
+—free query, field filter, and token fallbacks—and disables the transport's
+retry backoff (``retries=0``). One slow URL costs at most the remaining budget
+instead of ``MAX_RETRIES × HTTP_TIMEOUT``, and the loop stops as soon as the
+budget is spent.
+
 Offline mode (``LYRICS2PPTX_FIXTURE_DIR`` set) reads a saved response. The
 fixture is ``lrclib_<slug>.json`` when present, otherwise ``lrclib_sample.json``;
 its body must be the JSON array the live search returns.
@@ -35,6 +44,7 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
+from time import monotonic
 
 from .. import config
 from . import httputil
@@ -151,36 +161,63 @@ class LrclibSource:
                 _search_url_q(text), limit, fixture=_fixture_name(text)
             )
         else:
-            songs = self._search_live(text, limit)
+            # ADR-030: one deadline for every live URL; it replaces the
+            # per-request retry storm that used to reach ~100 s.
+            deadline = monotonic() + config.LRCLIB_TIMEOUT
+            songs = self._search_live(text, limit, deadline)
 
         if not songs:
             raise SourceNotFoundError("검색 결과가 없습니다")
         log.info("source=%s hits=%d", self.name, len(songs))
         return songs
 
-    def _search_live(self, text: str, limit: int) -> list[RawSong]:
+    def _search_live(self, text: str, limit: int, deadline: float) -> list[RawSong]:
         artist, title = _parse_query(text)
 
-        songs = self._collect(_search_url_q(text), limit)
+        songs = self._collect(_search_url_q(text), limit, deadline=deadline)
         if songs:
             return songs
 
         if artist:
-            songs = self._collect(_search_fields_url(title or text, artist), limit)
+            songs = self._collect(
+                _search_fields_url(title or text, artist), limit, deadline=deadline
+            )
             if songs:
                 return songs
 
         for fallback in _fallback_queries(text):
-            songs = self._collect(_search_url_q(fallback), limit)
+            songs = self._collect(_search_url_q(fallback), limit, deadline=deadline)
             if songs:
                 return songs
         return []
 
     def _collect(
-        self, url: str, limit: int, *, fixture: str | None = None
+        self,
+        url: str,
+        limit: int,
+        *,
+        fixture: str | None = None,
+        deadline: float | None = None,
     ) -> list[RawSong]:
-        """Fetch a search URL and map its array items, dropping unusable ones."""
-        items = httputil.get_json_list(url, fixture=fixture)
+        """Fetch a search URL and map its array items, dropping unusable ones.
+
+        When ``deadline`` (monotonic seconds) is given the *remaining* budget
+        becomes the socket timeout and retries are turned off (ADR-030): a
+        spent budget returns no candidates without touching the network, so the
+        caller cannot spend more than ``LYRICS2PPTX_LRCLIB_TIMEOUT`` overall.
+        """
+        retries: int | None = None
+        timeout: float | None = None
+        if deadline is not None:
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                log.debug("deadline exhausted url=%s", url)
+                return []
+            timeout = min(config.HTTP_TIMEOUT, remaining)
+            retries = 0
+        items = httputil.get_json_list(
+            url, timeout=timeout, retries=retries, fixture=fixture
+        )
         songs: list[RawSong] = []
         for item in items:
             if len(songs) >= limit:

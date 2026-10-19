@@ -221,6 +221,64 @@ class InjectedTransportTests(unittest.TestCase):
         self.assertEqual(len(songs), 1)
 
 
+class LiveBudgetTests(unittest.TestCase):
+    """ADR-030: a live ``search`` spends at most ``LRCLIB_TIMEOUT`` overall.
+
+    lrclib is a fallback behind the checked blog consensus (ADR-025), so a dead
+    lrclib must fail fast instead of holding the concurrent chain.
+    """
+
+    def setUp(self) -> None:
+        patcher = mock.patch.object(config, "FIXTURE_DIR", None)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.source = LrclibSource()
+
+    def _patch(self, fake):
+        return mock.patch(
+            "lyrics2pptx.crawl.lrclib.httputil.get_json_list", side_effect=fake
+        )
+
+    def test_remaining_budget_is_the_timeout_and_retries_are_off(self) -> None:
+        seen: list[tuple[float | None, int | None]] = []
+
+        def fake(url, *, fixture=None, timeout=None, retries=None):
+            seen.append((timeout, retries))
+            return [{"id": 1, "trackName": "T", "artistName": "A", "plainLyrics": "l"}]
+
+        with mock.patch.object(config, "LRCLIB_TIMEOUT", 10.0), mock.patch(
+            "lyrics2pptx.crawl.lrclib.monotonic", return_value=100.0
+        ), self._patch(fake):
+            songs = self.source.search("제목")
+
+        self.assertEqual(songs[0].title, "T")
+        self.assertEqual(seen[0][1], 0)  # retries disabled for lrclib
+        self.assertGreater(seen[0][0] or 0.0, 0.0)
+        self.assertLessEqual(seen[0][0] or 0.0, 10.0)  # never past the budget
+
+    def test_search_stops_once_the_budget_is_spent(self) -> None:
+        urls: list[str] = []
+        clock = iter([100.0, 100.0, 120.0])
+
+        def now() -> float:
+            return next(clock, 1e9)
+
+        def fake(url, *, fixture=None, timeout=None, retries=None):
+            urls.append(url)
+            return []
+
+        with mock.patch.object(config, "LRCLIB_TIMEOUT", 10.0), mock.patch(
+            "lyrics2pptx.crawl.lrclib.monotonic", side_effect=now
+        ), self._patch(fake):
+            with self.assertRaises(SourceNotFoundError):
+                self.source.search("우리 함께 손잡고 가세")
+
+        # The free query ran; the token fallbacks were skipped because the
+        # deadline had already passed, so the whole call stays inside 10 s.
+        self.assertEqual(len(urls), 1)
+        self.assertTrue(urls[0].startswith(f"{SEARCH_URL}?q="))
+
+
 class RegistryTests(unittest.TestCase):
     def test_lrclib_is_registered_and_satisfies_the_protocol(self) -> None:
         source = get_source("lrclib")

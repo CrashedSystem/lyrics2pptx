@@ -19,7 +19,9 @@ Enforced behaviour (docs/arch/06 §2, docs/plan/03 §HTTP 예절 레이어):
   (docs/arch/06 §2). Chains longer than ``MAX_REDIRECTS`` and redirect loops
   fail closed with ``SourceUnavailableError``.
 * 429/5xx/timeout are retried with exponential backoff (1s, 2s, 4s, up to
-  ``LYRICS2PPTX_MAX_RETRIES`` retries); 403/404 fail immediately.
+  ``LYRICS2PPTX_MAX_RETRIES`` retries); 403/404 fail immediately. A caller may
+  pass ``retries=0`` to skip the backoff entirely — lrclib does, because a dead
+  fallback source must not multiply the delay (ADR-030).
 * Requests are strictly sequential — no thread or process pools exist here.
 
 Offline mode: when ``LYRICS2PPTX_FIXTURE_DIR`` is set, ``get_json``/``get_text``
@@ -258,9 +260,17 @@ def _guard(url: str, *, ua: str) -> None:
     _respect_delay(url)
 
 
-def _request_with_retry(url: str, *, ua: str, timeout: float, parse: str) -> str:
+def _request_with_retry(
+    url: str,
+    *,
+    ua: str,
+    timeout: float,
+    parse: str,
+    retries: int | None = None,
+) -> str:
     host, path = _log_target(url)
-    attempts = config.MAX_RETRIES + 1  # 1 initial attempt + N retries
+    total_retries = config.MAX_RETRIES if retries is None else retries
+    attempts = max(1, total_retries + 1)  # 1 initial attempt + N retries
     last_reason = "unknown"
     for attempt in range(1, attempts + 1):
         log.info("GET host=%s path=%s attempt=%d", host, path, attempt)
@@ -303,15 +313,22 @@ def get_json(
     *,
     ua: str = DEFAULT_UA,
     timeout: float | None = None,
+    retries: int | None = None,
     fixture: str | None = None,
 ) -> dict:
-    """Return the decoded JSON body of ``url`` (or a saved fixture)."""
+    """Return the decoded JSON body of ``url`` (or a saved fixture).
+
+    ``retries`` overrides ``LYRICS2PPTX_MAX_RETRIES`` for this call only
+    (``0`` disables the backoff); ``None`` keeps the configured policy.
+    """
     effective_timeout = config.HTTP_TIMEOUT if timeout is None else timeout
     if config.FIXTURE_DIR is not None:
         raw = _read_fixture(url, fixture, parse="json")
     else:
         _guard(url, ua=ua)
-        raw = _request_with_retry(url, ua=ua, timeout=effective_timeout, parse="json")
+        raw = _request_with_retry(
+            url, ua=ua, timeout=effective_timeout, parse="json", retries=retries
+        )
     try:
         payload = json.loads(raw)
     except json.JSONDecodeError as exc:
@@ -326,6 +343,7 @@ def get_json_list(
     *,
     ua: str = DEFAULT_UA,
     timeout: float | None = None,
+    retries: int | None = None,
     fixture: str | None = None,
 ) -> list:
     """Return the decoded JSON **array** body of ``url`` (or a saved fixture).
@@ -333,14 +351,17 @@ def get_json_list(
     ``get_json`` rejects non-object payloads, so an array-returning end-point
     (lrclib ``/api/search``, ADR-017) needs its own accessor. The politeness
     gate, retry policy, and offline fixture hook are identical to ``get_json``;
-    only the final ``isinstance`` check differs.
+    only the final ``isinstance`` check differs. ``retries`` is passed through
+    unchanged (lrclib sends ``0`` — ADR-030).
     """
     effective_timeout = config.HTTP_TIMEOUT if timeout is None else timeout
     if config.FIXTURE_DIR is not None:
         raw = _read_fixture(url, fixture, parse="json")
     else:
         _guard(url, ua=ua)
-        raw = _request_with_retry(url, ua=ua, timeout=effective_timeout, parse="json")
+        raw = _request_with_retry(
+            url, ua=ua, timeout=effective_timeout, parse="json", retries=retries
+        )
     try:
         payload = json.loads(raw)
     except json.JSONDecodeError as exc:
@@ -355,6 +376,7 @@ def get_text(
     *,
     ua: str = DEFAULT_UA,
     timeout: float | None = None,
+    retries: int | None = None,
     fixture: str | None = None,
 ) -> str:
     """Return the text body of ``url`` (or a saved fixture)."""
@@ -362,7 +384,9 @@ def get_text(
     if config.FIXTURE_DIR is not None:
         return _read_fixture(url, fixture, parse="text")
     _guard(url, ua=ua)
-    return _request_with_retry(url, ua=ua, timeout=effective_timeout, parse="text")
+    return _request_with_retry(
+        url, ua=ua, timeout=effective_timeout, parse="text", retries=retries
+    )
 
 
 def sleep_between(seconds: float | None = None) -> None:

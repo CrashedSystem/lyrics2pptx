@@ -42,6 +42,8 @@ class DefaultsTests(unittest.TestCase):
         self.assertEqual(config.BIND_PORT, 8765)
         self.assertEqual(config.HTTP_DELAY, 2.0)
         self.assertEqual(config.HTTP_TIMEOUT, 10.0)
+        # ADR-030: lrclib's whole call is capped to 10 s by default.
+        self.assertEqual(config.LRCLIB_TIMEOUT, 10.0)
         self.assertEqual(config.MAX_RETRIES, 3)
 
     def test_clone_strategies_are_exactly_auto_parts_zip(self) -> None:
@@ -135,6 +137,17 @@ class EnvNumberTests(unittest.TestCase):
             with self.assertRaises(ConfigError):
                 config._env_float("LYRICS2PPTX_F", 1.0, minimum=0.0)
 
+    def test_lrclib_timeout_is_parsed_like_any_float_with_a_positive_floor(self) -> None:
+        # ADR-030: the budget is a normal env float and must stay positive.
+        with mock.patch.dict(os.environ, {"LYRICS2PPTX_LRCLIB_TIMEOUT": " 3.5 "}):
+            self.assertEqual(
+                config._env_float("LYRICS2PPTX_LRCLIB_TIMEOUT", 10.0, minimum=0.001),
+                3.5,
+            )
+        with mock.patch.dict(os.environ, {"LYRICS2PPTX_LRCLIB_TIMEOUT": "0"}):
+            with self.assertRaises(ConfigError):
+                config._env_float("LYRICS2PPTX_LRCLIB_TIMEOUT", 10.0, minimum=0.001)
+
 
 class EnvPathAndChoiceTests(unittest.TestCase):
     def test_relative_path_resolves_against_the_repository_root(self) -> None:
@@ -203,6 +216,10 @@ class UnknownEnvTests(unittest.TestCase):
     def test_known_variables_are_not_reported(self) -> None:
         with mock.patch.dict(os.environ, {"LYRICS2PPTX_TEMPLATE": "x.pptx"}):
             self.assertNotIn("LYRICS2PPTX_TEMPLATE", config.unknown_env_keys())
+
+    def test_lrclib_timeout_is_a_known_variable(self) -> None:
+        with mock.patch.dict(os.environ, {"LYRICS2PPTX_LRCLIB_TIMEOUT": "5"}):
+            self.assertNotIn("LYRICS2PPTX_LRCLIB_TIMEOUT", config.unknown_env_keys())
 
 
 if __name__ == "__main__":

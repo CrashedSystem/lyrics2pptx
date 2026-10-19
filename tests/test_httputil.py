@@ -173,6 +173,52 @@ class RetryTests(PolitenessBase):
         self.assertEqual(len(calls), config.MAX_RETRIES + 1)
         self.assertEqual([call.args[0] for call in sleeper.call_args_list], [1, 2, 4])
 
+    def test_retries_override_of_zero_skips_the_backoff(self) -> None:
+        # ADR-030: lrclib passes retries=0, so one 503/timeout fails at once
+        # instead of being retried three times with 1+2+4 s of sleeping.
+        calls: list[int] = []
+
+        def fake_open(url: str, *, ua: str, timeout: float) -> bytes:
+            calls.append(1)
+            raise _http_error("https://x.example.com/p", 503)
+
+        with mock.patch.object(httputil, "_open_and_read", side_effect=fake_open), mock.patch.object(
+            httputil, "allowed_by_robots", return_value=True
+        ), mock.patch("time.sleep") as sleeper:
+            with self.assertRaises(SourceUnavailableError):
+                httputil.get_json_list("https://x.example.com/p", retries=0)
+        self.assertEqual(len(calls), 1)
+        sleeper.assert_not_called()
+
+    def test_retries_override_of_one_allows_a_single_retry(self) -> None:
+        calls: list[int] = []
+
+        def fake_open(url: str, *, ua: str, timeout: float) -> bytes:
+            calls.append(1)
+            raise TimeoutError("timed out")
+
+        with mock.patch.object(httputil, "_open_and_read", side_effect=fake_open), mock.patch.object(
+            httputil, "allowed_by_robots", return_value=True
+        ), mock.patch("time.sleep") as sleeper:
+            with self.assertRaises(SourceUnavailableError):
+                httputil.get_text("https://x.example.com/p", retries=1)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual([call.args[0] for call in sleeper.call_args_list], [1])
+
+    def test_retries_override_none_keeps_the_configured_policy(self) -> None:
+        calls: list[int] = []
+
+        def fake_open(url: str, *, ua: str, timeout: float) -> bytes:
+            calls.append(1)
+            raise _http_error("https://x.example.com/p", 503)
+
+        with mock.patch.object(httputil, "_open_and_read", side_effect=fake_open), mock.patch.object(
+            httputil, "allowed_by_robots", return_value=True
+        ), mock.patch("time.sleep"):
+            with self.assertRaises(SourceUnavailableError):
+                httputil.get_json("https://x.example.com/p")
+        self.assertEqual(len(calls), config.MAX_RETRIES + 1)
+
     def test_403_blocks_immediately_without_retrying(self) -> None:
         self._assert_immediate_block(403)
 

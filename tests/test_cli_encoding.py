@@ -9,8 +9,15 @@ stack trace instead of the ``--help`` text or the error message.
 That crash cannot be reproduced on a GitHub runner, because runners use a UTF-8
 locale. These tests therefore assert the *locale-independent* property instead:
 every console-facing string is encodable as cp949, and a real ``--help`` run
-succeeds even when the console streams are cp949. Nothing here depends on the
-host console actually being cp949, so the suite is green on ubuntu too.
+succeeds even when the console streams are cp949.
+
+The one end-to-end test that reads the child's raw bytes asks the child what its
+console encoding actually is (``sys.stdout.encoding``) instead of assuming
+cp949: on a Korean Windows console that is cp949 and the hardening rule is
+asserted, on a UTF-8 locale (including the ubuntu runner) the same bytes must
+still decode cleanly and the hardening must not have touched them. Nothing here
+depends on the host console actually being cp949, so the suite is green on
+ubuntu too.
 
 Run standalone::
 
@@ -33,6 +40,18 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 # cp949 is the Korean Windows default; euc-kr/ks_c_5601-1987 are aliases.
 CONSOLE_ENCODING = "cp949"
+
+# 코드페이지 949 계열 이름들. 자식 프로세스가 보고한 인코딩이 이 중 하나면
+# "한국어 Windows 콘솔" 경로이며, 하드닝이 스트림을 변형한다.
+_CP949_ALIASES = {
+    "cp949",
+    "ms949",
+    "uhc",
+    "euc-kr",
+    "euckr",
+    "ks_c_5601-1987",
+    "ksc5601",
+}
 
 
 def assert_cp949_encodable(test: unittest.TestCase, text: object, label: str) -> None:
@@ -268,7 +287,28 @@ class HelpSubprocessTests(unittest.TestCase):
         self.assertNotIn("UnicodeEncodeError", stderr)
         self.assertIn(b"PPTX", proc.stdout)
 
-    def test_help_stdout_is_cp949_decodable(self) -> None:
+    def _child_stdout_encoding(self) -> str:
+        """자식 프로세스의 콘솔 인코딩을 직접 물어본다(호스트 추측 금지)."""
+        probe = subprocess.run(
+            [sys.executable, "-c", "import sys; print(sys.stdout.encoding)"],
+            cwd=str(REPO_ROOT),
+            env=self._clean_env(),
+            capture_output=True,
+            timeout=120,
+            check=True,
+        )
+        return probe.stdout.decode("ascii", "replace").strip()
+
+    def test_help_stdout_is_decodable_on_the_child_console(self) -> None:
+        """``--help`` 의 바이트가 **그 콘솔의 인코딩**으로 온전히 읽히는지 본다.
+
+        한국어 Windows 콘솔이면 cp949 가 나오고, 그때만 "인코딩할 수 없는 문자를
+        미리 바꿔 내보낸다"는 하드닝 규칙(em dash 부재)을 함께 단언한다.
+        UTF-8 로케일(우분투 러너 포함)에서는 같은 규칙이 스트림을 건드리지 않으므로
+        여기서는 "깨지지 않고 읽힌다"만 본다 — 이 단언이 실패했다면 그것은
+        회귀가 아니라 "플랫폼 가정이 틀렸다"는 신호다.
+        """
+        encoding = self._child_stdout_encoding()
         proc = subprocess.run(
             [sys.executable, "-m", "lyrics2pptx.cli", "--help"],
             cwd=str(REPO_ROOT),
@@ -277,12 +317,16 @@ class HelpSubprocessTests(unittest.TestCase):
             timeout=120,
             check=False,
         )
-        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(
+            proc.returncode, 0, proc.stderr.decode("utf-8", "replace")
+        )
         try:
-            text = proc.stdout.decode(CONSOLE_ENCODING)
+            text = proc.stdout.decode(encoding)
         except UnicodeDecodeError as exc:
-            self.fail(f"--help 출력이 cp949로 디코딩되지 않음: {exc}")
-        self.assertNotIn("\u2014", text)
+            self.fail(f"--help 출력이 콘솔 인코딩({encoding})으로 디코딩되지 않음: {exc}")
+        self.assertIn("PPTX", text)
+        if encoding.lower() in _CP949_ALIASES:
+            self.assertNotIn("\u2014", text)
 
 
 if __name__ == "__main__":

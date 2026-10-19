@@ -293,3 +293,64 @@ class ReferenceShapeTests(unittest.TestCase):
         )
         self.assertEqual(consensus.lines, SILOAM)
         self.assertEqual(consensus.source_count, 3)
+
+
+class SamePositionTests(unittest.TestCase):
+    """A position written differently is a variant, not a stray line (ADR-024).
+
+    Live, two of the four "실로암" pages sang the seventh position with other
+    words ("당신 눈 속에 여명 있음을" for "주님 맘속에 사랑 있음을"). That wording
+    scored below :data:`MATCH_RATIO` against the reference, so the vote treated
+    it as text the reference lacks and appended it as a thirteenth line — a
+    whole slide holding one line no publisher prints. It is the same position's
+    other rendering: the deck keeps the wording the pages agree on and reports
+    the rest in that position's ``variants``, where the user already looks for
+    ``에스길``/``에스겔``.
+    """
+
+    def test_a_differently_worded_position_is_reported_not_appended(self) -> None:
+        other = tuple(
+            "당신 눈 속에 여명 있음을" if line == "주님 맘속에 사랑 있음을" else line
+            for line in SILOAM
+        )
+        other_spaced = tuple(
+            "당신 눈 속에 여명있음을" if line == "당신 눈 속에 여명 있음을" else line
+            for line in other
+        )
+        spaced = tuple(
+            "주님 맘 속에 사랑 있음을" if line == "주님 맘속에 사랑 있음을" else line
+            for line in SILOAM
+        )
+        consensus = cross_check(
+            [
+                Transcript("once", SILOAM),
+                Transcript("spaced", spaced),
+                Transcript("other", other),
+                Transcript("other2", other_spaced),
+            ]
+        )
+        self.assertEqual(consensus.lines, SILOAM)
+        entry = _entry(consensus, "주님 맘속에 사랑 있음을")
+        self.assertEqual((entry.support, entry.total), (2, 4))
+        self.assertIn("주님 맘 속에 사랑 있음을", entry.variants)
+        self.assertIn("당신 눈 속에 여명 있음을", entry.variants)
+        self.assertNotIn("당신 눈 속에 여명 있음을", consensus.lines)
+
+    def test_a_line_inserted_between_neighbours_stays_an_extra(self) -> None:
+        """A bridge leaves no open position, so it is still an extra verse."""
+        bridge = "우리 함께 주를 찬양하네"
+        padded = SILOAM[:3] + (bridge,) + SILOAM[3:]
+        padded_spaced = tuple(
+            "종이울리고 닭이 울어도" if line == "종이 울리고 닭이 울어도" else line
+            for line in padded
+        )
+        consensus = cross_check(
+            [
+                Transcript("once", SILOAM),
+                Transcript("twice", SILOAM * 2),
+                Transcript("padded", padded),
+                Transcript("padded2", padded_spaced),
+            ]
+        )
+        self.assertEqual(consensus.lines, SILOAM + (bridge,))
+        self.assertEqual(_entry(consensus, bridge).support, 2)

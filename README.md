@@ -5,7 +5,7 @@
 서버·클라우드·계정이 필요 없고, 실행은 Windows 로컬 프로세스 하나와 로컬 웹서버(127.0.0.1)뿐이다.
 템플릿은 **읽기 전용 입력**으로만 열리며 절대 수정되지 않는다.
 
-> 상태: `src/`+`web/` 구현 완료. 테스트 `471 tests OK`. 진입점 `python -m lyrics2pptx.cli` / `python -m lyrics2pptx.webapp` / 더블클릭 `lyrics2pptx.vbs`. 기본 수집 소스는 `auto`(lrclib → 블로그 교차검증, ADR-018).
+> 상태: `src/`+`web/` 구현 완료. 테스트 `473 tests OK`. 진입점 `python -m lyrics2pptx.cli` / `python -m lyrics2pptx.webapp` / 더블클릭 `lyrics2pptx.vbs`. 기본 수집 소스는 `auto`(lrclib → 블로그 교차검증, ADR-018).
 
 ---
 
@@ -227,7 +227,7 @@ lyrics/
                            blog, crosscheck, chain, websearch/{base,ddg})
     text/                  정규화/2줄 분할 (normalize, split)
     pptx/                  템플릿 읽기·복제·채우기·쓰기 (writer*, builder, clone, fill…)
-  tests/                   471 tests (표준 unittest)
+  tests/                   473 tests (표준 unittest)
   docs/plan/ docs/arch/     설계 문서 · docs/guide/ 사용가이드 · docs/adr/ 결정 기록
 ```
 
@@ -239,8 +239,8 @@ lyrics/
 python -m unittest discover -s tests -t .
 ```
 
-검증된 결과(실제 실행): `Ran 471 tests … OK`, exit 0. 네트워크 실호출 0회이며 collect 단계는
-fixture/mock 으로 격리된다. `.\scripts\run.ps1 -Test` 도 동일하게 471 tests / OK / exit 0.
+검증된 결과(실제 실행): `Ran 473 tests … OK`, exit 0. 네트워크 실호출 0회이며 collect 단계는
+fixture/mock 으로 격리된다. `.\scripts\run.ps1 -Test` 도 동일하게 473 tests / OK / exit 0.
 
 정적 게이트:
 
@@ -281,6 +281,9 @@ fixture/mock 으로 격리된다. `.\scripts\run.ps1 -Test` 도 동일하게 471
   `--cross-check` 로 지지수와 **다른 표기**를 확인하고 필요하면 개별 페이지(`--index 1`~)를 고른다.
   합의의 **줄 순서**는 *노래를 한 번 인쇄한 페이지*(다수와 같은 개행)를 따른다: 같은 곡을 3회 인쇄한
   페이지·두 소절을 한 문단으로 뭉친 페이지는 기준이 되지 않는다(ADR-023).
+  한 자리를 **다른 말로** 적은 페이지가 섞여도(실로암 `주님 맘 속에 사랑 있음을` ↔ `당신 눈 속에 여명
+  있음을`) 그 표기는 합의 줄 **뒤에 붙지 않고** 그 자리의 `다른 표기` 로 보고된다(ADR-024) — 12줄 노래가
+  한 줄 때문에 7장이 되지 않는다.
   웹 수집은 페이지당 `HTTP_DELAY`(기본 2초)를 지켜 느리다(`BLOG_MAX_PAGES` 기본 5).
   후보 목록의 첫 줄이 `교차검증 안 됨` 이면 **투표가 성립하지 않았다는 뜻**이므로(성경 구절 페이지,
   목록 페이지, 동명이곡 등) 반드시 `호스트 · N줄` 라벨과 미리보기를 보고 고른다(ADR-020).

@@ -32,6 +32,14 @@ line shape most publishers use instead of one page's layout. A transcript that
 is not the same song (an unrelated search hit, or a page whose "lyrics" are an
 image and whose menu was scraped) is dropped before voting.
 
+A line the reference does not have is not always an extra verse: pages
+transcribe the same position with different words ("주님 맘속에 사랑 있음을"
+against "당신 눈 속에 여명 있음을" in 실로암). Such a line is found by looking at
+where it sits between the positions its own page *did* fill — one position left
+open there means the page rendered that position differently, so the wording is
+reported as a variant of it instead of being appended as a stray last line
+(ADR-024).
+
 Dropping pages is not the same thing as agreement, and the two are easy to
 confuse: when it kept only the medoid the vote still reported a "합의" — which is
 how a bible.com verse page became the lyrics for "정금같이 나오리라" (ADR-020).
@@ -355,30 +363,63 @@ def _keep_consistent(
     return kept
 
 
-def _best_match(key: str, lines: Sequence[str]) -> tuple[str, str] | None:
+def _find_match(key: str, lines: Sequence[str]) -> tuple[str, str, int] | None:
     """Find the rendering of ``key`` inside ``lines`` (order-independent).
 
+    Returns ``(key, spelling, index)`` where ``index`` is the line that carries
+    it, so a caller can also ask "which position does this page line fill?".
     Exact key matches win; among several identical keys the most common spelling
     is returned (a chorus repeats). When no key matches, the most similar line
     above :data:`MATCH_RATIO` is accepted, which is what lets a one-syllable
     typo still participate in the vote.
     """
-    exact = [line for line in lines if line_key(line) == key]
+    exact = [index for index, line in enumerate(lines) if line_key(line) == key]
     if exact:
-        text, _ = _mode(exact)
-        return key, text
+        text, _ = _mode(lines[index] for index in exact)
+        return key, text, exact[0]
 
-    best: tuple[float, str, str] | None = None
-    for line in lines:
+    best: tuple[float, str, str, int] | None = None
+    for index, line in enumerate(lines):
         other = line_key(line)
         if not other:
             continue
         ratio = SequenceMatcher(None, key, other, autojunk=False).ratio()
         if ratio >= MATCH_RATIO and (best is None or ratio > best[0]):
-            best = (ratio, other, line)
+            best = (ratio, other, line, index)
     if best is None:
         return None
-    return best[1], best[2]
+    return best[1], best[2], best[3]
+
+
+def _best_match(key: str, lines: Sequence[str]) -> tuple[str, str] | None:
+    """Find the rendering of ``key`` inside ``lines`` (see :func:`_find_match`)."""
+    found = _find_match(key, lines)
+    return None if found is None else (found[0], found[1])
+
+
+def _gap_position(positions: Sequence[int | None], index: int, size: int) -> int | None:
+    """The single reference position left between a page's matched neighbours.
+
+    ``positions[i]`` is the reference position that page line ``i`` fills (``None``
+    = it fills none). A line that fills none sits between two positions it *did*
+    fill: if exactly one reference position lies between them, the line is a
+    rendering *of that position* (the page wrote it differently); zero or several
+    positions mean an insertion (an extra verse). ``None`` covers both of those,
+    and with ``size`` as the sentinel for "nothing after it" this boundary logic
+    decides which of the two an unmatched line is (ADR-024).
+    """
+    previous = -1
+    for other in range(index - 1, -1, -1):
+        if positions[other] is not None:
+            previous = positions[other]
+            break
+    following = size
+    for other in range(index + 1, len(positions)):
+        if positions[other] is not None:
+            following = positions[other]
+            break
+    gap = list(range(previous + 1, following))
+    return gap[0] if len(gap) == 1 else None
 
 
 def _vote(pairs: Sequence[tuple[str, str]], *, ref_key: str, total: int) -> LineConsensus:
@@ -469,21 +510,59 @@ def cross_check(
                 pairs.append(match)
         entries.append(_vote(pairs, ref_key=key, total=total))
 
-    # Lines that exist only outside the reference (an extra verse) are appended,
-    # but a line carried by a single page is treated as that page's noise.
-    extras: dict[str, list[tuple[str, str]]] = {}
-    extra_order: list[str] = []
+    # Lines no reference position matched. Most are extra verses, but a page that
+    # writes one position differently instead of copying it ("주님 맘속에 사랑
+    # 있음을" → "당신 눈 속에 여명 있음을" in 실로암) leaves such a line in a gap of
+    # exactly one reference position: it is that position's other rendering, which
+    # belongs in the position's variants, not as a stray line at the end of the
+    # deck (ADR-024). An insertion between two neighbouring positions leaves no
+    # gap and stays an extra verse.
+    unmatched: dict[str, list[tuple[str, str, int | None]]] = {}
     for transcript in cleaned:
         if transcript is reference:
             continue
-        for line in transcript.lines:
+        positions = [
+            found[2] if (found := _find_match(line_key(line), reference.lines)) else None
+            for line in transcript.lines
+        ]
+        for index, line in enumerate(transcript.lines):
             key = line_key(line)
-            if not key or _best_match(key, reference.lines) is not None:
+            if not key or positions[index] is not None:
                 continue
-            if key not in extras:
-                extras[key] = []
-                extra_order.append(key)
-            extras[key].append((transcript.source, line))
+            gap = _gap_position(positions, index, len(reference.lines))
+            unmatched.setdefault(key, []).append((transcript.source, line, gap))
+
+    substituted: dict[int, list[str]] = {}
+    extras: dict[str, list[tuple[str, str]]] = {}
+    extra_order: list[str] = []
+    for key, occurrences in unmatched.items():
+        distinct = {source for source, _line, _gap in occurrences}
+        gaps = {gap for _source, _line, gap in occurrences}
+        if len(distinct) < max(1, min_support):
+            continue
+        if len(gaps) == 1 and None not in gaps:
+            position = next(iter(gaps))
+            text, _ = _mode(line for _source, line, _gap in occurrences)
+            substituted.setdefault(position, []).append(text)
+            continue
+        extras[key] = [(source, line) for source, line, _gap in occurrences]
+        extra_order.append(key)
+
+    if substituted:
+        entries = [
+            LineConsensus(
+                text=entry.text,
+                support=entry.support,
+                total=entry.total,
+                variants=entry.variants
+                + tuple(
+                    spelling
+                    for spelling in substituted.get(index, ())
+                    if spelling not in entry.variants
+                ),
+            )
+            for index, entry in enumerate(entries)
+        ]
 
     for key in extra_order:
         occurrences = extras[key]

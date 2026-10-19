@@ -65,6 +65,18 @@ _MARKER_SUFFIX_RE = re.compile(r"[ :]*[x×]?[0-9]*절?")
 # N8: an identical line repeated three or more times in a row collapses to one.
 _RUN_THRESHOLD = 3
 
+# N12: a verse/refrain marker glued to the *front* of a lyric line. Hymn sites
+# number their verses and the same verse is spelled "1." / "1)" / "(1)" /
+# "후렴 :" / "[후렴]" from one page to the next, so the vote saw five different
+# texts for one line and the deck printed three numbering styles in one song
+# (조사보고서 §16.4). Only a leading marker is removed, only when it is not the
+# start of a number ("1.5배" survives), and the keyword forms require the
+# bracket/colon shape so a lyric that merely begins with "후렴" is untouched.
+_LEADING_MARKER_RE = re.compile(
+    r"^\s*(?:[\[\(（]?\d{1,2}[\.\)\]）](?![0-9])"
+    r"|[\[\(（]?\s*후렴(?![^\s\]\)）:：])(?!\s*[:：]?\s*[0-9x×])\s*[\]\)）]?\s*[:：]?)\s*"
+)
+
 # N11: interjections a singer *performs* rather than sings. Deliberately a closed
 # list: a bracket is only removed when every word inside it is one of these, so
 # "(hold me now)" and "(사랑해요 영원히)" cannot be mistaken for an ad-lib.
@@ -192,13 +204,15 @@ def _collapse_consecutive_duplicates(lines: list[str]) -> list[str]:
 
 
 def _run_pipeline(text: str) -> tuple[list[str], int]:
-    """Run N1..N11 once and return ``(lines, removed_marker_count)``.
+    """Run the N5..N12 text steps once; return ``(lines, removed_marker_count)``.
 
     Single source for both ``normalize_lines`` and ``normalize_with_stats`` so
     the web preview and the real build can never disagree (M1/M2, docs/plan/04
-    §1 N6). ``removed_marker_count`` counts the N6 marker-only lines dropped; an
-    N11 ad-lib line that is emptied out is counted as a dropped line, exactly
-    like a blank one (N7), and is visible in the debug log below.
+    §1 N6). Execution order is N5 → N12 → N6 → N9 → N11 → N10 → N8 (the numbers
+    are identifiers, not the order). ``removed_marker_count`` counts the lines
+    dropped as section/verse markers (N6) *and* the ones N12 emptied; an N11
+    ad-lib line that is emptied out is counted as a dropped line, exactly like a
+    blank one (N7), and is visible in the debug log below.
     """
     if not text:
         return [], 0
@@ -211,6 +225,12 @@ def _run_pipeline(text: str) -> tuple[list[str], int]:
         cleaned = _MULTI_SPACE.sub(" ", line).strip()  # N5
         if not cleaned:  # N7 (blank / whitespace-only)
             continue
+        stripped = _LEADING_MARKER_RE.sub("", cleaned).strip()  # N12
+        if not stripped:
+            # The whole line was a marker ("1.", "(2)", "후렴 :").
+            removed_markers += 1
+            continue
+        cleaned = stripped
         if _is_section_marker(cleaned):  # N6
             removed_markers += 1
             continue

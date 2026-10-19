@@ -14,6 +14,7 @@ from lyrics2pptx import config
 from lyrics2pptx.crawl import blog
 from lyrics2pptx.crawl.base import RawSong, SourceNotFoundError
 from lyrics2pptx.crawl.websearch.base import SearchResult
+from lyrics2pptx.text import normalize
 
 LYRIC_PAGE = """
 <html><body>
@@ -224,6 +225,24 @@ COMMENT_WIDGET_PAGE = """
 </div></div></body></html>
 """
 
+# Hymn pages number their verses and decorate their headings. The same position
+# was spelled "1." / "1)" / "(1)" across pages, so the vote saw three texts for one
+# line and printed two numbering styles in one song; "📖 가사 해설" / "📜 가사" and a
+# link tooltip "(새창열림)" were transcribed as lyrics (ADR-028).
+MARKER_AND_EMOJI_PAGE = """
+<html><body><div class="entry">
+<p>1. 나같은 죄인 살리신 주 은혜 놀라와</p>
+<p>잃었던 생명 찾았고 광명을 얻었네</p>
+<p>📖 가사 해설</p>
+<p>(2) 큰 죄악에서 건지신 주 은혜 고마워</p>
+<p>나 처음 믿은 그 시간 귀하고 귀하다</p>
+<p>📜 가사</p>
+<p>🎵 사랑해요 영원히 그 사랑</p>
+<p>나 겸손히 엎드려 경배하며 찬양하리</p>
+<p>(새창열림)</p>
+</div></body></html>
+"""
+
 PAGES = {
     "https://a.example/1": LYRIC_PAGE,
     "https://b.example/2": LYRIC_PAGE,
@@ -355,6 +374,52 @@ class CommentAndMarkerTests(unittest.TestCase):
         self.assertFalse(blog._is_lyric_line("Johnangel님 유익한 정보 덕분에 많은 도움 받고 갑니다"))
         self.assertTrue(blog._is_lyric_line("주님 덕분에 우리가 살아가네"))
         self.assertEqual(blog.extract_lyrics(body * 6), ())
+
+    def test_verse_markers_are_stripped_and_headings_are_not_lyrics(self) -> None:
+        self.assertEqual(
+            blog.extract_lyrics(MARKER_AND_EMOJI_PAGE),
+            (
+                "나같은 죄인 살리신 주 은혜 놀라와",
+                "잃었던 생명 찾았고 광명을 얻었네",
+                "큰 죄악에서 건지신 주 은혜 고마워",
+                "나 처음 믿은 그 시간 귀하고 귀하다",
+                "사랑해요 영원히 그 사랑",
+                "나 겸손히 엎드려 경배하며 찬양하리",
+            ),
+        )
+
+    def test_a_decorated_lyric_keeps_its_text(self) -> None:
+        """The pictograph goes, the words stay: "🎵 사랑해요" is still a lyric."""
+        lines = dict(blog._to_lines('<p>🎵 사랑해요 영원히</p>'))
+        self.assertIn("사랑해요 영원히", lines)
+
+    def test_the_crawl_and_text_marker_patterns_agree(self) -> None:
+        """``text.normalize`` owns the canonical pattern; crawl restates its shape."""
+        samples = (
+            "1. 나같은 죄인 살리신 주 은혜 놀라와",
+            "(1)나 같은 죄인 살리신 주 은혜 놀라워",
+            "1) 나 같은 죄인 살리신 주 은혜 놀라와",
+            "12. 마지막 절",
+            "후렴 : 주님의 높고 위대하심을",
+            "후렴:주님의 높고 위대하심을",
+            "[후렴] 십자가 십자가",
+            "(후렴) 십자가 십자가",
+            "후렴 주님의 높고 위대하심을",
+            "후렴 2절",
+            "후렴",
+            "[후렴]",
+            "1.",
+            "(2)",
+            "1.5배의 은혜를 노래해",
+            "우리 함께 손잡고 가세",
+            "사랑해요 영원히",
+        )
+        for sample in samples:
+            self.assertEqual(
+                blog._LEADING_MARKER_RE.sub("", sample).strip(),
+                normalize._LEADING_MARKER_RE.sub("", sample).strip(),
+                sample,
+            )
 
 
 class StripHeadingsTests(unittest.TestCase):

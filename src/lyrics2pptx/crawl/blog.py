@@ -110,6 +110,24 @@ _SEPARATOR_SHAPE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# N12, restated (``text.normalize`` owns the canonical pattern): a verse/refrain
+# marker glued to the front of a lyric line. Removing it *before the vote* matters
+# as much as removing it from the text: pages spell the same verse "1.", "1)" and
+# "(1)", so without this the vote saw three different lines and a deck printed two
+# numbering styles plus a duplicated chorus (조사보고서 §16.4). ``tests/test_blog.py``
+# compares this pattern with normalize's on shared samples.
+_LEADING_MARKER_RE = re.compile(
+    r"^\s*(?:[\[\(（]?\d{1,2}[\.\)\]）](?![0-9])"
+    r"|[\[\(（]?\s*후렴(?![^\s\]\)）:：])(?!\s*[:：]?\s*[0-9x×])\s*[\]\)）]?\s*[:：]?)\s*"
+)
+
+# An emoji-led line is usually a section label, not a lyric ("📖 가사 해설",
+# "📜 가사" were both printed in a deck). Pictographs are *removed* rather than
+# used to reject the line, so a page that decorates its lyrics ("🎵 사랑해요
+# 영원히") keeps its text, while the label that remains ("가사 해설") is caught by
+# ``_CHROME_LINES``/``_HEADING_KEYS`` as the furniture it is (ADR-028).
+_PICTOGRAPH_RE = re.compile(r"[\U0001F000-\U0001FAFF\u2600-\u27BF\u2B00-\u2BFF\uFE0F]")
+
 # Furniture a lyric line never *equals*. Keys are ``line_key``-normalised
 # (space-free, alphanumeric) and matched exactly, so a lyric that merely contains
 # "검색" survives. These lines are dropped **without** ending the run: a login
@@ -121,6 +139,12 @@ _CHROME_LINES = frozenset(
         "한국어", "공유", "보관", "검색", "가사검색", "가사등록", "싱크가사등록",
         "ai해석", "가사카드", "동영상새로고침", "회원아이디필수", "비밀번호필수",
         "url복사", "더보기", "맨위로", "자동로그인",
+        # A link tooltip: an external-link anchor prints "(새창열림)" next to its
+        # text, and two pages of one song carried it into the vote (ADR-028).
+        "새창열림", "새창",
+        # Headings of the lyric block once the leading emoji is stripped
+        # ("📖 가사 해설" / "📜 가사") — ``_HEADING_KEYS`` only sees the edges.
+        "가사", "가사해설",
     }
 )
 
@@ -207,6 +231,8 @@ def _to_lines(page: str) -> list[tuple[str, bool]]:
             continue
         is_link = in_anchor or marks > 0
         line = line.replace(_LINK_MARK, "").strip()
+        line = _PICTOGRAPH_RE.sub("", line).strip()  # decoration, not text
+        line = _LEADING_MARKER_RE.sub("", line).strip()  # N12 (see above)
         if line:
             lines.append((line, is_link))
     return lines

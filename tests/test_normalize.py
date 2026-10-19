@@ -11,7 +11,7 @@ import unicodedata
 import unittest
 from pathlib import Path
 
-from lyrics2pptx.text.normalize import normalize_lines
+from lyrics2pptx.text.normalize import normalize_lines, normalize_with_stats
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
@@ -219,6 +219,62 @@ class SectionMarkerSuffixRegressionTests(unittest.TestCase):
     def test_a_block_of_markers_and_lyrics_keeps_only_the_lyrics(self) -> None:
         text = "[Verse 1]\nchorus line\n[Chorus]\nintro to me\n×2\noutro music"
         self.assertEqual(normalize_lines(text), ["chorus line", "intro to me", "outro music"])
+
+
+class LeadingMarkerTests(unittest.TestCase):
+    """N12: a verse/refrain marker glued to the front of a lyric line (ADR-028).
+
+    Hymn pages number their verses, and the same position was spelled "1." /
+    "1)" / "(1)" (and "후렴 :" / "[후렴]") from one page to the next, so the vote
+    kept three texts for one line and a deck printed two numbering styles plus a
+    duplicated chorus (§16.4). Only a *leading* marker is removed, and only when
+    it is punctuation-shaped or the refrain keyword: a lyric that merely begins
+    with a number ("1.5배") or with the word "후렴" is untouched.
+    """
+
+    def test_numbered_verse_prefixes_are_stripped(self) -> None:
+        cases = {
+            "1. 나같은 죄인 살리신 주 은혜 놀라와": "나같은 죄인 살리신 주 은혜 놀라와",
+            "(1)나 같은 죄인 살리신 주 은혜 놀라워": "나 같은 죄인 살리신 주 은혜 놀라워",
+            "1) 나 같은 죄인 살리신 주 은혜 놀라와": "나 같은 죄인 살리신 주 은혜 놀라와",
+            "12. 마지막 절이 시작되네": "마지막 절이 시작되네",
+            "2. 주 십자가 못 박힘은 속죄함 아닌가": "주 십자가 못 박힘은 속죄함 아닌가",
+        }
+        for raw, expected in cases.items():
+            with self.subTest(raw=raw):
+                self.assertEqual(normalize_lines(raw), [expected])
+
+    def test_refrain_prefixes_are_stripped(self) -> None:
+        cases = {
+            "후렴 : 주님의 높고 위대하심을": "주님의 높고 위대하심을",
+            "후렴:주님의 높고 위대하심을": "주님의 높고 위대하심을",
+            "[후렴] 십자가 십자가": "십자가 십자가",
+            "(후렴) 십자가 십자가": "십자가 십자가",
+            "후렴 주님의 높고 위대하심을": "주님의 높고 위대하심을",
+        }
+        for raw, expected in cases.items():
+            with self.subTest(raw=raw):
+                self.assertEqual(normalize_lines(raw), [expected])
+
+    def test_a_marker_line_by_itself_disappears(self) -> None:
+        for line in ("1.", "(2)", "12)", "후렴 :", "[후렴]"):
+            with self.subTest(line=line):
+                self.assertEqual(normalize_lines(line), [], f"{line!r} must be removed")
+
+    def test_a_number_inside_a_lyric_is_not_a_marker(self) -> None:
+        for line in ("1.5배의 은혜를 노래해", "3번째 계절이 지나도", "우리 함께 손잡고 가세"):
+            with self.subTest(line=line):
+                self.assertEqual(normalize_lines(line), [line])
+
+    def test_a_lyric_that_starts_with_the_refrain_word_is_kept(self) -> None:
+        for line in ("후렴처럼 남은 그 사랑", "후렴 3절을 노래해"):
+            with self.subTest(line=line):
+                self.assertEqual(normalize_lines(line), [line])
+
+    def test_the_removal_is_counted_as_a_marker(self) -> None:
+        lines, removed = normalize_with_stats("1.\n(2)\n후렴\n3. 사랑은 언제나 오네")
+        self.assertEqual(lines, ["사랑은 언제나 오네"])
+        self.assertEqual(removed, 3)
 
 
 if __name__ == "__main__":

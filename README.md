@@ -374,7 +374,7 @@ fixture/mock 으로 격리된다. `.\scripts\run.ps1 -Test` 도 동일하게 565
 
 ## 11. 설치 없이 받기 · 버그 신고
 
-- **베타 릴리스**: <https://github.com/CrashedSystem/lyrics2pptx/releases> — `lyrics2pptx-0.1.0-win64.zip` 을 받아 압축을 풀고
+- **베타 릴리스**: <https://github.com/CrashedSystem/lyrics2pptx/releases/tag/v0.1.0-beta.1> — `lyrics2pptx-0.1.0-win64.zip` 을 받아 압축을 풀고
   `lyrics2pptx\lyrics2pptx.exe` 를 더블클릭하면 끝입니다(Python 설치 불필요, ADR-033).
 - **버그 신고**: <https://github.com/CrashedSystem/lyrics2pptx/issues> — 증상과 함께 `output\launch.log` 를 붙여 주세요.
   로그에 검색어·파일 경로가 들어 있을 수 있으니 남에게 보이기 싫은 줄은 지우고 올리세요.

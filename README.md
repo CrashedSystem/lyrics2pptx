@@ -5,7 +5,7 @@
 서버·클라우드·계정이 필요 없고, 실행은 Windows 로컬 프로세스 하나와 로컬 웹서버(127.0.0.1)뿐이다.
 템플릿은 **읽기 전용 입력**으로만 열리며 절대 수정되지 않는다.
 
-> 상태: `src/`+`web/` 구현 완료. 테스트 `516 tests OK`. 진입점 `python -m lyrics2pptx.cli` / `python -m lyrics2pptx.webapp` / 더블클릭 `lyrics2pptx.vbs`. 기본 수집 소스는 `auto`(① blog 교차검증 → ② lrclib → ③ blog 미검증, ADR-025)이고 가사는 한글 우선이다(ADR-026). 폴백 소스 lrclib 은 곡당 총 10초 안에 답하거나 포기한다(ADR-030).
+> 상태: `src/`+`web/` 구현 완료. 테스트 `548 tests OK`. 진입점 `python -m lyrics2pptx.cli` / `python -m lyrics2pptx.webapp` / 더블클릭 `lyrics2pptx.vbs`. 기본 수집 소스는 `auto`(① blog 교차검증 → ② lrclib → ③ blog 미검증, ADR-025)이고 가사는 한글 우선이다(ADR-026). 폴백 소스 lrclib 은 곡당 총 10초 안에 답하거나 포기한다(ADR-030). 웹 UI 는 서버 수명을 스스로 관리한다 — 창을 닫으면 3분, 사용이 없으면 20분, 최대 3시간(ADR-032).
 
 ---
 
@@ -46,23 +46,22 @@ Windows 한국어 콘솔(cp949)에서는 위 명령의 한글이 깨질 수 있�
 .\scripts\run.ps1                             # 스위치 없음 = -Doctor (읽기 전용)
 ```
 
-**가장 쉬운 실행 — 두 가지 중 하나를 더블클릭한다.**
+**가장 쉬운 실행 — `lyrics2pptx` 아이콘(또는 `lyrics2pptx.vbs`)을 더블클릭한다.**
 
 | 파일 | 동작 | 종료 방법 |
 | --- | --- | --- |
-| `webui.cmd` | **콘솔 창을 띄우고** `http://127.0.0.1:8765/` 로 웹 UI를 실행 + 브라우저 자동 오픈 | 그 창을 닫거나 **Ctrl+C** |
-| `lyrics2pptx.vbs` | 콘솔 **없이** 숨김 실행(빈 포트 자동 선택, 브라우저 자동 오픈) | `webui_stop.cmd` 더블클릭 |
+| `lyrics2pptx.vbs` | 콘솔 **없이** 숨김 실행(빈 포트 자동 선택, 브라우저 자동 오픈). 이미 떠 있으면 **그 탭만 연다** | **아무것도 하지 않는다** — 창을 닫으면 3분 뒤, 사용이 없으면 20분 뒤, 길어도 3시간 뒤 서버가 스스로 종료된다. 즉시 끄려면 화면 오른쪽 위 **`종료`** 버튼 |
+| `webui.cmd` | **콘솔 창을 띄우고** `http://127.0.0.1:8765/` 로 실행 + 브라우저 자동 오픈(개발·확인용) | 그 창을 닫거나 **Ctrl+C** |
+| `webui_stop.cmd` | (개발자용) 남아 있는 서버를 강제로 정리 | — |
 
-- **GUI를 테스트할 때는 `webui.cmd` 를 권장한다.** 서버 로그가 창에 보이고, 주소가 항상
-  `http://127.0.0.1:8765/` 로 고정되며, **창을 닫으면 서버가 내려간다.**
-- `lyrics2pptx.vbs` 는 ADR-017 의 "콘솔 없음" 요구용이다. 숨김 실행이라 **끄는 방법이 없어서**
-  `webui_stop.cmd`(아래)로 종료한다. 포트가 매번 달라질 수 있으므로 주소는
-  `output\launch.log` 또는 자동으로 열린 브라우저 탭에서 확인한다.
-- `webui_stop.cmd` 는 `8765` 포트 점유 프로세스와 `lyrics2pptx.webapp` 로 실행된 모든
-  프로세스를 종료한다(다른 파이썬 앱은 건드리지 않는다). 인자로 포트를 줄 수도 있다:
-  `webui_stop.cmd 9000`.
-- 직접 명령으로 멈추려면: `taskkill /f /im pythonw.exe`(숨김 인스턴스 전체) 또는
-  PowerShell `Get-NetTCPConnection -LocalPort 8765 | % { Stop-Process -Id $_.OwningProcess -Force }`.
+- **사용자는 `webui_stop.cmd` 를 알 필요가 없다.** 페이지가 사라진 것을 서버가 스스로 알아채고(3분), 사용 기록이 없으면 20분,
+  최대 3시간 안에 종료한다(ADR-032). 진행 중인 검색·생성이 있으면 작업이 끝날 때까지 종료를 미룬다.
+- 같은 아이콘을 두 번 눌러도 서버가 두 개 뜨지 않는다: `output\webui.state` 에 적힌 인스턴스가 `/api/ping` 에 답하면
+  새 서버 대신 그 탭만 연다.
+- 포트가 매번 달라질 수 있으므로 주소는 자동으로 열린 탭, `output\webui.state`, `output\launch.log` 중 아무 데서나 확인한다.
+- 서버 로그가 보이고 주소가 `8765` 로 고정되므로 **GUI 자체를 개발·확인할 때**는 `webui.cmd` 를 쓴다.
+- 직접 명령으로 멈추려면: `webui_stop.cmd`(포트 인자 가능: `webui_stop.cmd 9000`) 또는 PowerShell
+  `Get-NetTCPConnection -LocalPort 8765 | % { Stop-Process -Id $_.OwningProcess -Force }`.
 
 ---
 
@@ -120,15 +119,20 @@ Windows 한국어 콘솔(cp949)에서는 위 명령의 한글이 깨질 수 있�
 
 ## 3. 웹 UI 사용법
 
+**가장 쉬운 방법 — `lyrics2pptx.vbs` 더블클릭.** 콘솔 없이 서버가 뜨고 브라우저 탭이 자동으로 열린다.
+끄는 방법은 **창을 닫는 것**이다(3분 뒤 서버가 정리된다). 지금 바로 끄려면 화면 오른쪽 위 **`종료`** 버튼을 누른다.
+
 ```powershell
-python -m lyrics2pptx.webapp        # 또는: .\scripts\run.ps1 -Web   또는: webui.cmd
-# 브라우저에서 http://127.0.0.1:8765 열기 (Ctrl+C 로 종료 / webui_stop.cmd 로 종료)
+.\scripts\run.ps1 -Web     # 또는: python -m lyrics2pptx.webapp  → 브라우저에서 http://127.0.0.1:8765 (Ctrl+C 로 종료)
 ```
 
-화면 흐름: **(1) 가사 가져오기**(검색 / 직접 입력) → **(2) 곡 선택** → **(3) 미리보기**
-→ **(4) 다운로드**. 직접 입력 모드의 미리보기는 서버(`POST /api/preview`)가 계산한 값을
-그대로 보여 주므로 **미리보기와 실제 파일이 어긋나지 않는다**. 검색 모드의 기본 소스는
-`auto`(① blog 교차검증 → ② lrclib → ③ blog 미검증, ADR-025)이며 드롭다운에서 `blog`·`lrclib`·`lyrics_ovh` 로 바꿀 수 있다.
+화면은 **단계 배지 1~5** 로 이어진다: (1) 가사 가져오기(검색 / 직접 입력) → (2) 곡 선택(검색했을 때만) → (3) 배경 슬라이드 선택
+→ (4) 미리보기 → (5) 저장(파일 이름 + `PPTX 생성`). 오른쪽 **미리보기는 항상 보인다** — PPTX 를 열지 않아도 슬라이드에 들어갈
+내용이 그대로 보이고 쪽 단위로 넘겨 볼 수 있다. 만든 파일은 저장 패널의 결과 박스에서 **다시 내려받기** 하거나 **폴더 열기**로
+탐색기에서 바로 찾을 수 있다(내려받은 파일이 아니라 `output\` 의 파일을 선택해 준다).
+
+직접 입력 모드의 미리보기는 서버(`POST /api/preview`)가 계산한 값을 그대로 보여 주므로 **미리보기와 실제 파일이 어긋나지 않는다**.
+검색 모드의 기본 소스는 `auto`(① blog 교차검증 → ② lrclib → ③ blog 미검증, ADR-025)이며 드롭다운에서 `blog`·`lrclib`·`lyrics_ovh` 로 바꿀 수 있다.
 `blog` 의 결과 `0`번은 **합의 가사**, 그 뒤는 개별 페이지 전사본이다(ADR-018).
 
 검색 중에는 화면 하단에 **진행 카드**가 고정된다(ADR-019): 지금 무엇을 하는지(단계 목록),
@@ -148,8 +152,13 @@ HTTP 라우트(로컬 전용):
 | `GET` | `/api/search/job?id=…` | 진행 스냅샷(400ms 폴링). `done` 이면 `results`, 실패면 `error` |
 | `POST` | `/api/preview` | `{raw_text, dedupe_chorus}` → 정규화된 줄 + 2줄 페어 |
 | `POST` | `/api/generate` | `{query\|raw_text\|lines, …}` → 생성된 `.pptx` 바이트 다운로드 |
+| `GET`/`POST` | `/api/ping` | 세션 스냅샷(`instance`·`auto_shutdown`·`busy`·남은 초·`closing`·`uptime_s`·`shutdown_reason`). `?closing=1`=탭 닫힘 비콘, `?keep=1`=사용 표시 |
+| `POST` | `/api/shutdown` | 페이지에서 서버 종료 요청(진행 중 작업이 끝나면 내려간다) |
+| `POST` | `/api/reveal` | 마지막 산출물을 탐색기에서 선택(`explorer /select`) |
 
 서버는 `127.0.0.1` 에만 바인딩되고, 요청 본문은 최대 1 MiB, 정적 서빙은 `web/` 안으로 제한된다.
+상태를 바꾸는 요청(`/api/shutdown`·`/api/reveal`·closing 비콘)은 **페이지에만 심긴 1회 토큰**(`X-Lyrics2Pptx-Token`)과
+`Origin` 이 둘 다 맞아야 하며 아니면 403 이다 — 다른 웹사이트가 cross-site POST 로 서버를 끄거나 탐색기를 열 수 없다(ADR-032).
 빌드는 전역 락으로 1건씩 직렬 처리된다(템플릿이 37 MB in-process 자원이기 때문).
 
 검증된 예 (실제 실행): `GET /`→200, `GET /api/search?q=생명샘`→200,
@@ -204,6 +213,11 @@ venv → `py -3.12` → `python` 순으로 인터프리터를 찾는다. 미설�
 | `LYRICS2PPTX_USER_AGENT` | str | `lyrics2pptx/0.1 (+local single-user tool)` | httputil |
 | `LYRICS2PPTX_BIND_HOST` | str | `127.0.0.1` | webapp |
 | `LYRICS2PPTX_BIND_PORT` | int | `8765` | webapp |
+| `LYRICS2PPTX_WEBUI_TAB_GRACE` | float(초) | `180` | config, webapp (ADR-032) |
+| `LYRICS2PPTX_WEBUI_IDLE` | float(초) | `1200` | config, webapp (ADR-032) |
+| `LYRICS2PPTX_WEBUI_MAX_LIFETIME` | float(초) | `10800` | config, webapp (ADR-032) |
+| `LYRICS2PPTX_WEBUI_AUTOSHUTDOWN` | `0`/`1` | `1` | config, webapp (ADR-032) |
+| `LYRICS2PPTX_WEBUI_STATE_FILE` | path | `<repo>\output\webui.state` | config, webapp (ADR-032) |
 | `LYRICS2PPTX_LOG_LEVEL` | str | `INFO` | config, 진입점 |
 | `LYRICS2PPTX_KEEP_NOTES` | `0`/`1` | `0` | builder |
 | `LYRICS2PPTX_DEDUPE_CHORUS` | `0`/`1` | `0` | pipeline |
@@ -227,7 +241,7 @@ lyrics/
   webui.cmd                더블클릭 실행 진입점 (콘솔 보임, 8765 고정, 창 닫기=종료)
   webui_stop.cmd           웹 UI 종료 (포트 8765 + lyrics2pptx.webapp 프로세스)
   web/                     index.html · app.js · style.css (vanilla JS)
-  output/                  생성된 .pptx 저장 위치 (gitignore; .gitkeep 만 추적)
+  output/                  생성된 .pptx 저장 위치 + webui.state 런처 rendezvous + launch.log (gitignore; .gitkeep 만 추적)
   src/lyrics2pptx/
     cli.py, webapp.py      L4 진입점
     pipeline.py            L3 조립 + describe_error() 단일 오류 매핑
@@ -236,7 +250,7 @@ lyrics/
                            blog, crosscheck, chain, websearch/{base,ddg})
     text/                  정규화/2줄 분할 (normalize, split)
     pptx/                  템플릿 읽기·복제·채우기·쓰기 (writer*, builder, clone, fill…)
-  tests/                   516 tests (표준 unittest)
+  tests/                   548 tests (표준 unittest)
   docs/plan/ docs/arch/     설계 문서 · docs/guide/ 사용가이드 · docs/adr/ 결정 기록
 ```
 
@@ -248,8 +262,8 @@ lyrics/
 python -m unittest discover -s tests -t .
 ```
 
-검증된 결과(실제 실행): `Ran 516 tests … OK`, exit 0. 네트워크 실호출 0회이며 collect 단계는
-fixture/mock 으로 격리된다. `.\scripts\run.ps1 -Test` 도 동일하게 516 tests / OK / exit 0.
+검증된 결과(실제 실행): `Ran 548 tests … OK`, exit 0. 네트워크 실호출 0회이며 collect 단계는
+fixture/mock 으로 격리된다. `.\scripts\run.ps1 -Test` 도 동일하게 548 tests / OK / exit 0.
 
 정적 게이트:
 

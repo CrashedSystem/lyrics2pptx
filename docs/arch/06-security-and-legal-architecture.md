@@ -92,6 +92,9 @@ graph TD
 | HTTP 요청 → 정적 서버 | 디렉터리 탈출 | 해결 경로가 `web/` 하위인지 `Path.is_relative_to()` 검사 |
 | 거대 붙여넣기 | 메모리/디스크 | 1 MiB 요청 상한 → 413 |
 | 가사 저작권 | 재배포 | 라이선스 고지 + 개인 용도 명시 (기술적 강제 불가, 고지로 한정) |
+| 다른 웹사이트 → 로컬 서버 상태 변경 | cross-site POST 로 서버 종료·탐색기 열기(포트는 추측 가능) | 페이지에만 심는 1회 토큰 + `Origin` 검사 → `403` (ADR-032) |
+| 다른 사이트의 "탭 닫힘" 주장 | 서버 수명 조작(곧 종료시키기) | closing 비콘도 같은 토큰 검사 → `403` (ADR-032) |
+| 런처 → 서버 연결 | stale 상태 파일·pid 재사용으로 남의 프로세스를 건드림 | 상태 파일의 `instance` 를 `/api/ping` 응답과 비교(불일치면 무시) (ADR-032) |
 
 ## 4. 개인정보·콘텐츠 취급
 
@@ -121,7 +124,7 @@ graph TD
 | 미적용 | 이유 |
 | --- | --- |
 | HTTPS 종료/인증서 | localhost HTTP, 단일 사용자 |
-| 인증/세션/CSRF | 인증 대상 없음. CSRF 대상 상태 변경은 로컬 파일 생성뿐 |
+| 인증/세션/CSRF | 인증 대상 없음(사용자 개념 없음). 상태를 바꾸는 요청(종료·탐색기 열기·탭 닫힘 비콘)만 **페이지 1회 토큰 + `Origin`** 으로 막는다(ADR-032) |
 | 레이트 리미팅(자체 API) | 사용자 1명, 로컬 |
 | 입력 스키마 검증 라이브러리(pydantic 등) | 필드 5개 수동 검증으로 충분 (의존성 0 유지) |
 | 샌드박싱/컨테이너 격리 | 로컬 신뢰 실행 환경 |
@@ -142,5 +145,11 @@ graph TD
 | `test_webapp.py::test_path_traversal_outside_the_web_directory_is_404` | `/static/../../etc` 유형 → 404 |
 | `test_config.py::test_scalar_defaults_match_the_environment_manifest` | 기본 바인딩이 `127.0.0.1` |
 | `test_webapp.py::test_oversized_body_is_rejected_with_413` | 1 MiB 초과 → 413 |
+| `test_webapp.py::test_shutdown_without_the_token_is_refused` | 토큰 없는 `POST /api/shutdown` → 403, 서버는 살아 있다 |
+| `test_webapp.py::test_shutdown_from_another_site_is_refused` | 다른 `Origin` 의 `POST /api/shutdown` → 403 |
+| `test_webapp.py::test_another_site_cannot_pretend_the_tab_is_closing` | 다른 `Origin` 의 closing 비콘 → 403 |
+| `test_webapp.py::test_the_scripts_do_not_carry_the_token` | 토큰은 `GET /` 에만 — 정적 JS/CSS 응답에는 없다 |
+| `test_webapp.py::test_only_the_served_page_may_open_a_folder` | 토큰 없는 `POST /api/reveal` → 403(탐색기 미실행) |
+| `test_webapp.py::test_a_name_outside_the_output_directory_is_sanitized_away` | `/api/reveal` 의 `..\` 이름은 sanitize → 404 |
 | `test_template_reader.py::test_template_size_matches_the_file_on_disk` | 템플릿을 읽기 전용으로 열고 파일 크기 불변을 단언 |
 | (미구현) | `index.html` 저작권 문구에 대한 전용 단언 테스트는 아직 없음 |

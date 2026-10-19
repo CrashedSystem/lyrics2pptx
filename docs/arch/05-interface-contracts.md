@@ -28,12 +28,17 @@
 | GET | `/api/slides` · `/api/slides/{index}/thumbnail` | — | 슬라이드 메타 / PNG | `_handle_slides`, `_handle_thumbnail` |
 | POST | `/api/preview` | JSON | `{"lines":[...], "pairs":[...]}` | `_handle_preview` |
 | POST | `/api/generate` | JSON | pptx 바이너리 | `_handle_generate` |
+| GET·POST | `/api/ping` (`?closing=1`·`?keep=1`) | 쿼리스트링(+토큰) | `200` 세션 스냅샷 / closing 은 `403`(토큰 불일치) | `_handle_ping` |
+| POST | `/api/shutdown` | (본문 없음) | `200 {"ok":true,"reason",…snapshot}` / `403` | `_handle_shutdown` |
+| POST | `/api/reveal` | JSON `{"filename"}` | `200 {"ok":true,"filename":…}` / `403` / `404` | `_handle_reveal` |
 
 `/api/search/start` + `/api/search/job` 는 같은 계약의 두 조각이다(ADR-019): 수집은 블로킹이므로
 브라우저가 작업을 시작해 두고 400ms 간격으로 스냅샷을 폴링한다. 스냅샷은
 `{job_id, state: running|done|error, elapsed_ms, steps:[{message, done?, total?, percent?}], progress}` 이고
 `done` 이면 `results`, `error` 면 `error`(=`describe_error` 와 동일한 3필드)가 함께 온다.
 단발 `/api/search` 는 그대로 유지된다 — 스크립트와 테스트가 쓰는 계약이다.
+
+`/api/ping`·`/api/shutdown`·`/api/reveal` 은 ADR-032 의 세션 계약이다(아래 §2.5).
 
 ### 2.2 요청/응답 스키마 (확정)
 
@@ -103,6 +108,37 @@ Content-Length: <n>
 | 요청 크기 상한 | 1 MiB (`Content-Length` 초과 시 413) | 붙여넣기 텍스트 상한. 악의적 대용량 차단 |
 | 캐시 헤더 | 정적 자산 `Cache-Control: no-store` | 개발 편의(단일 사용자) |
 | charset | 모든 텍스트 응답 `charset=utf-8` | 인코딩 규칙(08 §4) |
+
+### 2.5 세션 수명과 상태 변경 (ADR-032)
+
+`GET|POST /api/ping` 은 세션의 현재 상태를 그대로 돌려준다(하트비트·탭 닫힘 비콘·상태 조회를 겸한다).
+
+```jsonc
+// GET /api/ping → 200 (필드 전부 webapp.Session.snapshot() 에서 나온다)
+{ "ok": true, "version": "0.1.0", "instance": "f6c42b0ad7d5c0e7",
+  "auto_shutdown": true, "busy": false,
+  "tab_grace_s": 180.0, "idle_timeout_s": 1200.0,
+  "idle_seconds_left": 1091, "lifetime_seconds_left": 10518,
+  "closing": false, "uptime_s": 282, "shutdown_reason": null }
+```
+
+| 규칙 | 값(기본) | 발동 조건 |
+| --- | --- | --- |
+| 탭 신호 | `WEBUI_TAB_GRACE` = 180초 | `?closing=1`(토큰 필요) 을 받은 뒤 180초. 어떤 ping 이든 취소한다 |
+| 무활동 | `WEBUI_IDLE` = 1200초 | **사용자 요청**이 없는 채 1200초. ping/하트비트는 "사용"이 아니다 |
+| 최대 수명 | `WEBUI_MAX_LIFETIME` = 10800초 | 탭이 열려 있어도 강제 종료 |
+| 보류 | — | `in_flight > 0` 또는 실행 중 검색 작업이면 위 세 규칙 모두 대기 |
+| 전부 끄기 | `WEBUI_AUTOSHUTDOWN=0` | 세 규칙 전부 비활성(스크립트·배치) |
+
+- **권한 판정은 한 곳**(`_page_may_ask`)이다: `X-Lyrics2Pptx-Token` 이 `hmac.compare_digest` 로 일치해야 하고,
+  `Origin` 헤더가 있으면 `http://<Host>`/`https://<Host>` 여야 한다. 불일치는 `403 FORBIDDEN`(상태·이유 로그만 남긴다).
+  토큰은 `GET /` 응답의 `<meta name="lyrics2pptx-session">` 으로만 나가고 정적 JS/CSS 에는 넣지 않는다.
+- `?closing=1` 은 페이지가 `pagehide` 에서 `keepalive` 로 보내는 **탭 닫힘 비콘**이다. 일반 ping 은 이 판단을 취소한다.
+  `?keep=1` 은 화면의 "계속 쓰기"이고 **사용**으로 세어 idle 을 되돌린다.
+- `POST /api/shutdown` 은 즉시 종료가 아니라 **요청 기록**(`reason="사용자 요청"`)이다. 진행 중 작업이 끝나면 워치독이 내린다
+  (응답을 먼저 보낸 뒤 타이머로 `shutdown()`).
+- `POST /api/reveal` 의 `filename` 은 sanitize 후 `OUTPUT_DIR` 안으로 resolve 한다. 벗어나거나 파일이 없으면 404 —
+  정적 서빙 containment 와 같은 규칙이다.
 
 ## 3. CLI 계약 (`cli.py`)
 
@@ -183,6 +219,11 @@ def resolve_output_path(output_path: Path | None, *, title: str | None) -> Path:
 | `LYRICS2PPTX_CACHE_ENABLED` | `0`/`1` | `1` | `pipeline` (검색 메모리 캐시) |
 | `LYRICS2PPTX_CLONE_STRATEGY` | `auto`/`parts`/`zip` | `auto` | `builder` |
 | `LYRICS2PPTX_TITLE_SHAPE` | str | `제목 1` | `fill`, `template_reader` |
+| `LYRICS2PPTX_WEBUI_TAB_GRACE` | float(초) | `180` | `config`, `webapp` (ADR-032) |
+| `LYRICS2PPTX_WEBUI_IDLE` | float(초) | `1200` | `config`, `webapp` (ADR-032) |
+| `LYRICS2PPTX_WEBUI_MAX_LIFETIME` | float(초) | `10800` | `config`, `webapp` (ADR-032) |
+| `LYRICS2PPTX_WEBUI_AUTOSHUTDOWN` | `0`/`1` | `1` | `config`, `webapp` (ADR-032) |
+| `LYRICS2PPTX_WEBUI_STATE_FILE` | path | `<repo>/output/webui.state` | `config`, `webapp` (ADR-032) |
 
 | 규칙 | 값 |
 | --- | --- |
@@ -199,4 +240,7 @@ def resolve_output_path(output_path: Path | None, *, title: str | None) -> Path:
 | 임시 파일 | `output/.tmp-<uuid>.pptx` → `os.replace` | `builder` (AD-13) |
 | 인코딩 | 모든 텍스트 파일 UTF-8 no BOM, LF | 전 모듈 |
 | 정적 자산 | `web/` 밖 파일 제공 금지(경로 해결 후 containment 검사) | `webapp` (AD-15) |
+| 런처 rendezvous | `output/webui.state` — ASCII `key=value` + `#` 주석, 원자적 쓰기, **instance 일치 시에만** 삭제 | `webapp` (ADR-032) |
+| 숨김 실행 로그 | `output/launch.log` — pythonw 의 stdout/stderr. 매 콜드 스타트마다 새로 만든다 | 런처 (ADR-017) |
+| 탐색기 열기 대상 | `/api/reveal` 은 `OUTPUT_DIR` 안의 **파일**만, sanitize 후 resolve | `webapp` (ADR-032) |
 | fixture | `tests/fixtures/` 에서만, `LYRICS2PPTX_FIXTURE_DIR` 설정 시 | `httputil` |

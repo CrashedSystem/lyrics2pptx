@@ -262,6 +262,46 @@ sequenceDiagram
 - 단발 `/api/search` 는 그대로 남는다(스크립트·테스트의 계약).
 - 작업은 프로세스 메모리이며 나이(10분)·개수(32)로 정리된다. 클라이언트가 폴링을 멈춰도 서버는 새지 않는다.
 
+### 6.2 서버 수명은 서버가 관리한다 (ADR-032)
+
+콘솔 없는 실행(ADR-017)에는 "끄는 창"이 없다. 그래서 종료를 **사용자 절차가 아니라 서버의 상태 기계**로 옮겼다:
+`webapp.Session` 이 세 규칙을 판단하고, 워치독 스레드가 그것을 실행한다.
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant L as "lyrics2pptx.vbs"
+  participant S as "webapp.py (Session + watchdog)"
+  participant B as "Browser (app.js)"
+  participant F as "output/webui.state"
+  participant E as "탐색기"
+
+  L->>F: webui.state 읽기 (런처 rendezvous)
+  L->>S: GET /api/ping → instance 비교
+  alt 살아 있는 인스턴스
+    L->>B: 그 URL 탭만 연다 (새 서버 없음)
+  else 없음 또는 불일치
+    L->>S: pythonw -m lyrics2pptx.webapp (숨김, 빈 포트)
+    S->>F: write_state(instance, host, port, pid, url)
+    L->>B: launch.log 의 URL 로 탭 열기
+  end
+  loop 60초 + visibility/pageshow
+    B->>S: GET /api/ping (heartbeat — idle 은 갱신하지 않는다)
+  end
+  B->>S: POST /api/ping?closing=1 (pagehide, keepalive + 토큰)
+  S->>S: closing_at 기록 → 180초 유예 (heartbeat 가 오면 취소)
+  B->>S: POST /api/shutdown (화면의 종료 버튼)
+  S->>S: 워치독 판정 — 유예 / 무활동 1200초 / 최대 10800초 (진행 중이면 보류)
+  S->>F: clear_state(instance 가 일치할 때만)
+  S->>S: 서버 종료 (로그에 reason)
+  S->>E: POST /api/reveal → explorer /select (OUTPUT_DIR 안의 파일만)
+```
+
+- 상태를 바꾸는 요청(종료·탐색기 열기·탭 닫힘 비콘)은 **페이지 1회 토큰 + `Origin`** 을 요구한다(`06 §3`·`06 §7`).
+  다른 사이트가 cross-site POST 로 서버를 끄거나 탐색기를 열 수 없다.
+- 진행 중 작업(`in_flight`/실행 중 검색 작업)은 세 규칙을 모두 **미룬다** — 오래 걸리는 곡이 잘려 나가지 않는다.
+- `/api/ping` 은 heartbeat·비콘·상태 조회를 겸하는 **단일 계약**이고, heartbeat 는 `busy` 를 true 로 만들지 않는다.
+
 ## 7. 시퀀스 다이어그램 — 오류 경로 (오류→메시지 단일 지점)
 
 ```mermaid

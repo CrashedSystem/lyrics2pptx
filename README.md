@@ -5,7 +5,7 @@
 서버·클라우드·계정이 필요 없고, 실행은 Windows 로컬 프로세스 하나와 로컬 웹서버(127.0.0.1)뿐이다.
 템플릿은 **읽기 전용 입력**으로만 열리며 절대 수정되지 않는다.
 
-> 상태: `src/`+`web/` 구현 완료. 테스트 `511 tests OK`. 진입점 `python -m lyrics2pptx.cli` / `python -m lyrics2pptx.webapp` / 더블클릭 `lyrics2pptx.vbs`. 기본 수집 소스는 `auto`(① blog 교차검증 → ② lrclib → ③ blog 미검증, ADR-025)이고 가사는 한글 우선이다(ADR-026). 폴백 소스 lrclib 은 곡당 총 10초 안에 답하거나 포기한다(ADR-030).
+> 상태: `src/`+`web/` 구현 완료. 테스트 `516 tests OK`. 진입점 `python -m lyrics2pptx.cli` / `python -m lyrics2pptx.webapp` / 더블클릭 `lyrics2pptx.vbs`. 기본 수집 소스는 `auto`(① blog 교차검증 → ② lrclib → ③ blog 미검증, ADR-025)이고 가사는 한글 우선이다(ADR-026). 폴백 소스 lrclib 은 곡당 총 10초 안에 답하거나 포기한다(ADR-030).
 
 ---
 
@@ -236,7 +236,7 @@ lyrics/
                            blog, crosscheck, chain, websearch/{base,ddg})
     text/                  정규화/2줄 분할 (normalize, split)
     pptx/                  템플릿 읽기·복제·채우기·쓰기 (writer*, builder, clone, fill…)
-  tests/                   511 tests (표준 unittest)
+  tests/                   516 tests (표준 unittest)
   docs/plan/ docs/arch/     설계 문서 · docs/guide/ 사용가이드 · docs/adr/ 결정 기록
 ```
 
@@ -248,8 +248,8 @@ lyrics/
 python -m unittest discover -s tests -t .
 ```
 
-검증된 결과(실제 실행): `Ran 511 tests … OK`, exit 0. 네트워크 실호출 0회이며 collect 단계는
-fixture/mock 으로 격리된다. `.\scripts\run.ps1 -Test` 도 동일하게 511 tests / OK / exit 0.
+검증된 결과(실제 실행): `Ran 516 tests … OK`, exit 0. 네트워크 실호출 0회이며 collect 단계는
+fixture/mock 으로 격리된다. `.\scripts\run.ps1 -Test` 도 동일하게 516 tests / OK / exit 0.
 
 정적 게이트:
 

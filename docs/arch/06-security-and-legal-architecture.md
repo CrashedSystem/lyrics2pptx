@@ -95,6 +95,9 @@ graph TD
 | 다른 웹사이트 → 로컬 서버 상태 변경 | cross-site POST 로 서버 종료·탐색기 열기(포트는 추측 가능) | 페이지에만 심는 1회 토큰 + `Origin` 검사 → `403` (ADR-032) |
 | 다른 사이트의 "탭 닫힘" 주장 | 서버 수명 조작(곧 종료시키기) | closing 비콘도 같은 토큰 검사 → `403` (ADR-032) |
 | 런처 → 서버 연결 | stale 상태 파일·pid 재사용으로 남의 프로세스를 건드림 | 상태 파일의 `instance` 를 `/api/ping` 응답과 비교(불일치면 무시) (ADR-032) |
+| 손으로 고친 상태 파일 → 런처 | 다른 호스트로 사용자를 보냄 | 주소를 파일에서 믿지 않고 `127.0.0.1:<port>` 를 직접 만든다 (ADR-033) |
+| 패키지 배포 | 사용자 PC 에서 신뢰할 수 없는 exe 실행 | 우리가 빌드한 zip 만 배포(SmartScreen 경고 가능 — 서명 없음, 베타 한계) · 실행 경계는 그대로 `127.0.0.1` (ADR-033) |
+| 얼린 실행 로그 | 토큰·개인정보가 파일로 남음 | 로그에는 요청 줄·reason 만 남고 토큰은 남기지 않는다(`launch.log` 는 사용자 PC 로컬) (ADR-033) |
 
 ## 4. 개인정보·콘텐츠 취급
 
@@ -111,7 +114,7 @@ graph TD
 
 | 고지 | 위치 | 문구(요지) |
 | --- | --- | --- |
-| 가사 저작권 | `web/index.html` 푸터 | "가사 저작권은 권리자에게 있습니다. 개인 용도로만 사용하세요." |
+| 가사 저작권 | `web/index.html` 푸터 + 패키지 동봉 `사용법.txt` | "가사 저작권은 권리자에게 있습니다. 개인 용도로만 사용하세요." |
 | 소스 이용약관 | `web/index.html` 직접입력 안내 + `README.md` | "자동 수집은 robots.txt 와 이용약관을 준수하는 소스만 기본 제공합니다." |
 | HTML 어댑터 경고 | `crawl/html_generic.py` 파일 상단 주석 + 실행 시 `logging.warning` | "기본 비활성. 대상 사이트 robots.txt·약관 확인 후 활성화하세요." |
 | 프로젝트 라이선스 | `README.md` | (사용자 확정 필요 — 미확정) |
@@ -152,4 +155,7 @@ graph TD
 | `test_webapp.py::test_only_the_served_page_may_open_a_folder` | 토큰 없는 `POST /api/reveal` → 403(탐색기 미실행) |
 | `test_webapp.py::test_a_name_outside_the_output_directory_is_sanitized_away` | `/api/reveal` 의 `..\` 이름은 sanitize → 404 |
 | `test_template_reader.py::test_template_size_matches_the_file_on_disk` | 템플릿을 읽기 전용으로 열고 파일 크기 불변을 단언 |
+| `test_webapp.py::test_a_server_that_is_not_ours_is_not_reused` | 상태 파일의 instance 가 다르면 재사용하지 않는다(남의 서버·stale) (ADR-033) |
+| `test_webapp.py::test_a_dead_port_is_not_reused` | 파일만 있고 서버가 없으면 새로 띄운다 (ADR-033) |
+| `test_config.py::test_the_exe_folder_is_the_root` | 얼린 실행에서 템플릿·`output/` 이 exe 옆을 가리킨다(자식 인터프리터 프로브) (ADR-033) |
 | (미구현) | `index.html` 저작권 문구에 대한 전용 단언 테스트는 아직 없음 |

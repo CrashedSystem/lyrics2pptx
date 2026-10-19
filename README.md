@@ -5,7 +5,30 @@
 서버·클라우드·계정이 필요 없고, 실행은 Windows 로컬 프로세스 하나와 로컬 웹서버(127.0.0.1)뿐이다.
 템플릿은 **읽기 전용 입력**으로만 열리며 절대 수정되지 않는다.
 
-> 상태: `src/`+`web/` 구현 완료. 테스트 `548 tests OK`. 진입점 `python -m lyrics2pptx.cli` / `python -m lyrics2pptx.webapp` / 더블클릭 `lyrics2pptx.vbs`. 기본 수집 소스는 `auto`(① blog 교차검증 → ② lrclib → ③ blog 미검증, ADR-025)이고 가사는 한글 우선이다(ADR-026). 폴백 소스 lrclib 은 곡당 총 10초 안에 답하거나 포기한다(ADR-030). 웹 UI 는 서버 수명을 스스로 관리한다 — 창을 닫으면 3분, 사용이 없으면 20분, 최대 3시간(ADR-032).
+> 상태: `src/`+`web/` 구현 완료. 테스트 `565 tests OK`. 진입점 `python -m lyrics2pptx.cli` / `python -m lyrics2pptx.webapp` / 더블클릭 `lyrics2pptx.vbs` / **패키지** `dist\lyrics2pptx\lyrics2pptx.exe`(ADR-033). 기본 수집 소스는 `auto`(① blog 교차검증 → ② lrclib → ③ blog 미검증, ADR-025)이고 가사는 한글 우선이다(ADR-026). 폴백 소스 lrclib 은 곡당 총 10초 안에 답하거나 포기한다(ADR-030). 웹 UI 는 서버 수명을 스스로 관리한다 — 창을 닫으면 3분, 사용이 없으면 20분, 최대 3시간(ADR-032).
+
+---
+
+## 0. 설치 없이 쓰기 (베타 패키지, ADR-033)
+
+개발자가 아니라 **쓰기만** 하는 사람에게는 이 파일 하나를 준다.
+
+```text
+dist\lyrics2pptx-0.1.0-win64.zip
+```
+
+압축을 풀면 폴더 하나가 나오고 그 안에 세 개가 들어 있다.
+
+```text
+lyrics2pptx\lyrics2pptx.exe   ← 이것만 더블클릭하면 끝 (Python 설치 불필요)
+lyrics2pptx\template.pptx     배경 20장 원본 (읽기 전용 입력)
+lyrics2pptx\사용법.txt        한 장짜리 안내 — 실행·사용·종료·신고
+```
+
+- 브라우저 탭이 저절로 열린다(콘솔 창 없음). 결과는 그 폴더의 `output\` 에 쌓인다.
+- 끄는 방법은 따로 없다: 탭을 닫으면 3분, 사용이 없으면 20분, 최대 3시간 뒤 스스로 종료한다(ADR-032).
+- 잘 안 되면 `output\launch.log` 를 보면 된다(패키지 실행의 유일한 기록).
+- 만들려면: `python -X utf8 packaging\build.py`
 
 ---
 
@@ -236,6 +259,8 @@ lyrics/
   pyproject.toml           패키지 메타 (src 레이아웃, pip install -e .)
   requirements.txt         런타임 핀: python-pptx==1.0.2
   scripts/run.ps1          Windows 러너
+  packaging/               릴리스 빌드 (entry.py = PyInstaller 진입, build.py = 얼리기→조립→zip) + 사용법.txt (ADR-033)
+  dist/                    [빌드 산출, gitignore] lyrics2pptx-<버전>-win64.zip — 사용자에게 주는 파일 하나
   getport.py               무콘솔 실행용 빈 포트 선택기 (ADR-017)
   lyrics2pptx.vbs          더블클릭 실행 진입점 (콘솔 없음, ASCII/no-BOM)
   webui.cmd                더블클릭 실행 진입점 (콘솔 보임, 8765 고정, 창 닫기=종료)
@@ -250,7 +275,7 @@ lyrics/
                            blog, crosscheck, chain, websearch/{base,ddg})
     text/                  정규화/2줄 분할 (normalize, split)
     pptx/                  템플릿 읽기·복제·채우기·쓰기 (writer*, builder, clone, fill…)
-  tests/                   548 tests (표준 unittest)
+  tests/                   565 tests (표준 unittest)
   docs/plan/ docs/arch/     설계 문서 · docs/guide/ 사용가이드 · docs/adr/ 결정 기록
 ```
 
@@ -262,8 +287,8 @@ lyrics/
 python -m unittest discover -s tests -t .
 ```
 
-검증된 결과(실제 실행): `Ran 548 tests … OK`, exit 0. 네트워크 실호출 0회이며 collect 단계는
-fixture/mock 으로 격리된다. `.\scripts\run.ps1 -Test` 도 동일하게 548 tests / OK / exit 0.
+검증된 결과(실제 실행): `Ran 565 tests … OK`, exit 0. 네트워크 실호출 0회이며 collect 단계는
+fixture/mock 으로 격리된다. `.\scripts\run.ps1 -Test` 도 동일하게 565 tests / OK / exit 0.
 
 정적 게이트:
 

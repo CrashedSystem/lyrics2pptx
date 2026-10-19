@@ -25,7 +25,7 @@ L4 는 아무도 import 하지 않는다. L4 → L4 금지 (`cli` ↔ `webapp` �
 | 모듈 | 계층 | 하는 일 | **하지 않는 일** |
 | --- | --- | --- | --- |
 | `errors.py` | L0 | 예외 트리의 루트 `Lyrics2PptxError` 와 횡단 예외 정의 | 네트워크, 파일, XML 접근 |
-| `config.py` | L0 | 상수, 경로 해석, `os.environ` 읽기, 기본값 | 도메인 로직. **env 접근은 이 모듈에만 존재** |
+| `config.py` | L0 | 상수, 경로 해석(`sys.frozen` 이면 exe 폴더가 `ROOT`, `web/` 는 번들 내부 — ADR-033), `os.environ` 읽기, 기본값 | 도메인 로직. **env 접근은 이 모듈에만 존재** |
 | `crawl/base.py` | L0 | `RawSong`, `Source` 프로토콜, `SourceError` 계층 | 네트워크 접근 |
 | `crawl/httputil.py` | L1 | robots 확인, UA, 지연, 재시도/백오프, fixture 훅 | 사이트별 파싱, 텍스트 정규화 |
 | `crawl/progress.py` | L1 | 수집 진행 상황 문자열의 스레드별 싱크(`report`/`set_sink`) — UI 표시 전용 | 수집 로직, 네트워크, 퍼센트 계산(총량은 수집기가 준다) |
@@ -47,7 +47,8 @@ L4 는 아무도 import 하지 않는다. L4 → L4 금지 (`cli` ↔ `webapp` �
 | `pptx/builder.py` | L3 | 배경 순환 + 복제/채우기 조립 + 원자적 저장 | 수집, 정규화, 배경 선택 규칙 변경 |
 | `pipeline.py` | L3 | 3축 조립, `describe_error()`(오류→사용자 메시지 단일 지점) | 각 단계 내부 로직 |
 | `cli.py` | L4 | argv 파싱, 로깅 초기화, 종료코드 | 도메인 로직 |
-| `webapp.py` | L4 | HTTP 라우팅, 바인딩, 직렬화, 락 | 도메인 로직, 파일 저장(빌더에 위임) |
+| `webapp.py` | L4 | HTTP 라우팅, 바인딩, 직렬화, 락, 세션 수명(ADR-032), **패키지 진입 `launch()`·`reuse_url()`**(ADR-033) | 도메인 로직, 파일 저장(빌더에 위임) |
+| `packaging/` (`entry.py`·`build.py`, `src/` 밖) | 빌드 도구 | PyInstaller 진입 스크립트와 릴리스 빌드(얼리기 → 동봉 3종 조립 → zip) | 실행 시점에 import 되지 않는다(P6 대상 밖, `scripts/` 와 같은 층) |
 
 ## 3. 허용 화살표 (완전 목록 — 이 외의 import 는 금지)
 
@@ -301,6 +302,38 @@ sequenceDiagram
   다른 사이트가 cross-site POST 로 서버를 끄거나 탐색기를 열 수 없다.
 - 진행 중 작업(`in_flight`/실행 중 검색 작업)은 세 규칙을 모두 **미룬다** — 오래 걸리는 곡이 잘려 나가지 않는다.
 - `/api/ping` 은 heartbeat·비콘·상태 조회를 겸하는 **단일 계약**이고, heartbeat 는 `busy` 를 true 로 만들지 않는다.
+
+### 6.3 패키지 실행에는 런처 스크립트가 없다 (ADR-033)
+
+개발 트리에서는 `lyrics2pptx.vbs` 가 6.2 의 "런처"였다. 패키지(`lyrics2pptx.exe`)에서는 **그 역할이 파이썬 안으로** 들어온다 —
+사용자가 누를 파일이 하나뿐이어야 하기 때문이다. 상태 파일·instance 규칙·수명 규칙은 6.2 와 **동일한 것**을 쓴다(새 프로토콜 없음).
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant U as "사용자 (더블클릭)"
+  participant X as "lyrics2pptx.exe (webapp.launch)"
+  participant F as "output/webui.state"
+  participant B as "Browser"
+  participant G as "output/launch.log"
+
+  U->>X: lyrics2pptx.exe 더블클릭 (콘솔 없음)
+  X->>G: stdout/stderr 를 append 로 연결 (회전 1MiB)
+  X->>F: 읽기 → port·instance
+  X->>X: GET /api/ping (instance 비교)
+  alt 살아 있는 인스턴스
+    X->>B: 그 URL 탭만 연다 (exit 0 — 새 서버 없음)
+  else 없음 또는 불일치
+    X->>X: build_server(빈 포트) → serve_forever 스레드 + 워치독
+    X->>F: write_state(instance, host, port, pid, url)
+    X->>B: 기본 브라우저로 탭 열기
+    X->>X: 종료 신호를 기다린다 (6.2 의 규칙이 끝낸다)
+  end
+```
+
+- 얼린 경로: `config.ROOT` = exe 폴더(템플릿·`output/`), `web/` = `sys._MEIPASS`(번들 내부). 환경변수는 여전히 이긴다.
+- 로그는 **append** 다: exe 를 두 번 눌러도 실행 중인 서버의 기록을 지우지 않는다(실측 결함을 이 결정에서 고쳤다).
+- onefile 은 프로세스가 2개(부모=압축 해제, 자식=앱) 보이는 것이 정상이며, 종료 시 함께 사라진다.
 
 ## 7. 시퀀스 다이어그램 — 오류 경로 (오류→메시지 단일 지점)
 

@@ -139,6 +139,9 @@ Content-Length: <n>
   (응답을 먼저 보낸 뒤 타이머로 `shutdown()`).
 - `POST /api/reveal` 의 `filename` 은 sanitize 후 `OUTPUT_DIR` 안으로 resolve 한다. 벗어나거나 파일이 없으면 404 —
   정적 서빙 containment 와 같은 규칙이다.
+- **재사용 판정은 클라이언트 쪽에도 한 벌 있다**(`webapp.reuse_url()`, ADR-033): `output/webui.state` 의 `port`·`instance` 를 읽어
+  `127.0.0.1` 로 다시 물어보고(`/api/ping`) instance 가 같을 때만 그 URL 을 돌려준다. 주소는 파일에서 믿지 않고 **직접 만든다** —
+  손으로 고친 상태 파일이 런처를 다른 호스트로 보낼 수 없다.
 
 ## 3. CLI 계약 (`cli.py`)
 
@@ -241,6 +244,7 @@ def resolve_output_path(output_path: Path | None, *, title: str | None) -> Path:
 | 인코딩 | 모든 텍스트 파일 UTF-8 no BOM, LF | 전 모듈 |
 | 정적 자산 | `web/` 밖 파일 제공 금지(경로 해결 후 containment 검사) | `webapp` (AD-15) |
 | 런처 rendezvous | `output/webui.state` — ASCII `key=value` + `#` 주석, 원자적 쓰기, **instance 일치 시에만** 삭제 | `webapp` (ADR-032) |
-| 숨김 실행 로그 | `output/launch.log` — pythonw 의 stdout/stderr. 매 콜드 스타트마다 새로 만든다 | 런처 (ADR-017) |
+| 숨김 실행 로그 | `output/launch.log` — 런처의 stdout/stderr. `.vbs` 는 콜드 스타트마다 새로 만들고(truncate), 패키지 실행은 **append + 1MiB 회전**이라 두 번 눌러도 기록이 살아남는다 | 런처 (ADR-017) · `webapp.launch` (ADR-033) |
+| 패키지 배치 | 얼린 실행에서 `ROOT` = **exe 가 있는 폴더**(템플릿·`output/`), `web/` = 번들 내부(`sys._MEIPASS`). 환경변수가 항상 이긴다 | `config` (ADR-033) |
 | 탐색기 열기 대상 | `/api/reveal` 은 `OUTPUT_DIR` 안의 **파일**만, sanitize 후 resolve | `webapp` (ADR-032) |
 | fixture | `tests/fixtures/` 에서만, `LYRICS2PPTX_FIXTURE_DIR` 설정 시 | `httputil` |

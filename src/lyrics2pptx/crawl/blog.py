@@ -82,10 +82,17 @@ _NOISE_RE = re.compile(
     r"|\b(?:feat|ft)\.|모든\s*번역본|묵상\s*계획|무료\s*묵상|가사\s*더보기|노래\s*듣기)",
     re.IGNORECASE,
 )
-# Korean prose ends with these; lyrics almost never do.
+# Korean prose ends with these; lyrics almost never do. ``⋯`` (U+22EF, not the
+# typographic ``…``) is what a comment widget appends when it truncates the text:
+# nine such lines from a tistory "recent comments" sidebar reached the vote as a
+# single-page consensus (ADR-027).
 _PROSE_END_RE = re.compile(
-    r"(?:[.!?…]|습니다|입니다|합니다|됩니다|십니다|십시오|세요|니까|는데요)\s*$"
+    r"(?:[.!?…⋯]|습니다|입니다|합니다|됩니다|십니다|십시오|세요|니까|는데요)\s*$"
 )
+# A nickname vocative plus blog-courtesy wording is a comment, not a lyric
+# ("Johnangel님 유익한 정보 덕분에 많은 도움 받고⋯"). Both halves are required and
+# the word list is closed, so "주님" + a real lyric phrase is untouched (ADR-027).
+_COMMENT_RE = re.compile(r"^\S{1,24}님\s+\S.*(?:포스팅|덕분|방명록|블로그)")
 # A site's own counters sit in brackets at the end of a line ("메일로 (0)",
 # "어린이찬송가 (478)", "분류 전체보기 (8015)"). Real lyric lines do not end with a
 # bare number, but a tistory sidebar notice did, so that page's "lyrics" became
@@ -173,6 +180,14 @@ def _collapse_duplicated_block(lines: list[str]) -> list[str]:
 def _to_lines(page: str) -> list[tuple[str, bool]]:
     """Flatten HTML into ``(line, is_link)`` pairs of trimmed text lines."""
     text = _SCRIPT_RE.sub(" ", page)
+    # Anchor *regions* are marked at both ends (ADR-021), and the marker can end
+    # up on a line of its own: the inner HTML often starts with a newline or
+    # contains a block tag, so ``_BLOCK_RE`` splits the text away from the
+    # marker. A tistory sidebar's "recent comments" widget is exactly that shape
+    # — the comment text sat inside ``<a class="link-sidebar">`` but, after
+    # splitting, carried no marker, so the anchor rule silently missed it and
+    # nine comment lines became a one-page "consensus" (ADR-027). Track the
+    # state across lines instead of reading it off one line.
     text = _ANCHOR_RE.sub(lambda match: _LINK_MARK + match.group(1) + _LINK_MARK, text)
     text = _BLOCK_RE.sub("\n", text)
     text = _TAG_RE.sub(" ", text)
@@ -182,11 +197,15 @@ def _to_lines(page: str) -> list[tuple[str, bool]]:
     # the literal token is not lyric-like and silently truncates the run.
     text = html_module.unescape(html_module.unescape(text))
     lines: list[tuple[str, bool]] = []
+    in_anchor = False
     for raw in text.split("\n"):
         line = _SPACE_RE.sub(" ", raw).strip()
+        marks = line.count(_LINK_MARK)
+        if marks % 2:
+            in_anchor = not in_anchor
         if not line:
             continue
-        is_link = _LINK_MARK in line
+        is_link = in_anchor or marks > 0
         line = line.replace(_LINK_MARK, "").strip()
         if line:
             lines.append((line, is_link))
@@ -200,6 +219,8 @@ def _is_lyric_line(line: str, *, is_link: bool = False) -> bool:
     if not 2 <= len(line) <= 55:
         return False
     if _NOISE_RE.search(line):
+        return False
+    if _COMMENT_RE.search(line):
         return False
     if _PROSE_END_RE.search(line):
         return False

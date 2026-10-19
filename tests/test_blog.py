@@ -172,6 +172,58 @@ SIDEBAR_NOTICE_PAGE = """
 </div></body></html>
 """
 
+# tistory prints the blog's "recent comments" in a sidebar widget whose text sits
+# inside ``<a class="link-sidebar">``. The anchor marker ended up on a line of its
+# own (the inner HTML starts with a newline and holds a block tag), so the ADR-021
+# anchor rule read the text as body copy: nine comments — every one of them the
+# page's own nickname plus blog-courtesy wording, truncated with ``⋯`` — became a
+# one-page "consensus" for 'Blessed Assurance' and a slide (ADR-027).
+COMMENT_WIDGET_PAGE = """
+<html><body><div class="article-reply"><div class="area-reply">
+<div class="box-reply">
+  <h3 class="title-sidebar">최근댓글</h3>
+  <ul class="list-sidebar">
+    <li>
+      <a href="/11847223#comment20834043" class="link-sidebar">
+        <strong>Johnangel님 깊이 있는 포스팅 잘 보고 갑니다!⋯</strong>
+        <p></p>
+      </a>
+    </li>
+    <li>
+      <a href="/11847223#comment20834044" class="link-sidebar">
+        <strong>Johnangel님 포스팅을 읽으며 제 과거 경험이 자⋯</strong>
+        <p></p>
+      </a>
+    </li>
+    <li>
+      <a href="/11847223#comment20834045" class="link-sidebar">
+        <strong>Johnangel님 유익한 정보 덕분에 많은 도움 받고⋯</strong>
+        <p></p>
+      </a>
+    </li>
+    <li>
+      <a href="/11847223#comment20834046" class="link-sidebar">
+        <strong>Johnangel님 흥미로운 포스팅 덕분에 유익한 시간⋯</strong>
+        <p></p>
+      </a>
+    </li>
+    <li>
+      <a href="/11847223#comment20834047" class="link-sidebar">
+        <strong>Johnangel님 오늘 글에서 얻은 배움이 많네요 ^⋯</strong>
+        <p></p>
+      </a>
+    </li>
+    <li>
+      <a href="/11847223#comment20834048" class="link-sidebar">
+        <strong>Johnangel님 꼼꼼한 포스팅에 감동했어요 🥰 좋은⋯</strong>
+        <p></p>
+      </a>
+    </li>
+  </ul>
+</div>
+</div></div></body></html>
+"""
+
 PAGES = {
     "https://a.example/1": LYRIC_PAGE,
     "https://b.example/2": LYRIC_PAGE,
@@ -270,6 +322,39 @@ class PagePlausibilityTests(unittest.TestCase):
         self.assertFalse(blog._is_lyric_line("메일로 (0)"))
         self.assertFalse(blog._is_lyric_line("어린이찬송가 (478)"))
         self.assertTrue(blog._is_lyric_line("사랑해요 (사랑해요 영원히)"))
+
+
+class CommentAndMarkerTests(unittest.TestCase):
+    """Page furniture that reached a deck as lyrics (ADR-027, ADR-028)."""
+
+    def test_a_sidebar_comment_widget_is_not_a_transcription(self) -> None:
+        self.assertEqual(blog.extract_lyrics(COMMENT_WIDGET_PAGE), ())
+
+    def test_an_anchor_marker_on_its_own_line_still_marks_its_text(self) -> None:
+        """The marker is tracked across lines, not read off one line (ADR-027).
+
+        The comment text carries no truncation mark and no courtesy wording in
+        this probe, so nothing but the anchor rule can refuse it.
+        """
+        page = COMMENT_WIDGET_PAGE.replace(
+            "<strong>Johnangel님 깊이 있는 포스팅 잘 보고 갑니다!⋯</strong>",
+            "<strong>하늘님 글 잘 읽었어요</strong>",
+        )
+        self.assertTrue(blog._is_lyric_line("하늘님 글 잘 읽었어요"))
+        flagged = [
+            is_link
+            for line, is_link in blog._to_lines(page)
+            if line.startswith("하늘님 글 잘 읽었어요")
+        ]
+        self.assertEqual(flagged, [True])
+        self.assertEqual(blog.extract_lyrics(page), ())
+
+    def test_a_comment_that_is_not_in_a_link_is_still_refused(self) -> None:
+        """A sidebar that prints a comment without a link: shape rules catch it."""
+        body = "<p>Johnangel님 유익한 정보 덕분에 많은 도움 받고 갑니다</p>"
+        self.assertFalse(blog._is_lyric_line("Johnangel님 유익한 정보 덕분에 많은 도움 받고 갑니다"))
+        self.assertTrue(blog._is_lyric_line("주님 덕분에 우리가 살아가네"))
+        self.assertEqual(blog.extract_lyrics(body * 6), ())
 
 
 class StripHeadingsTests(unittest.TestCase):

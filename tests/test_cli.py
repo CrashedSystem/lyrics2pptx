@@ -320,6 +320,26 @@ class CrossCheckWordingTests(unittest.TestCase):
         self.assertIn("3곳 교차검증", out)
         self.assertNotIn("경고", out)
 
+    def test_the_header_names_the_language_of_the_lines(self) -> None:
+        """ADR-026: the policy prefers Korean, so the output must say which."""
+        korean = self._result(cross_checked=True, pages_seen=3)
+        english = pipeline.CrossCheckResult(
+            query=korean.query,
+            lines=("Amazing grace", "How sweet the sound"),
+            detail=(),
+            source_count=3,
+            cross_checked=True,
+            pages_seen=3,
+        )
+        with mock.patch.object(pipeline, "cross_check", return_value=korean):
+            code, out, _ = run_cli(["--query", "정금같이 나오리라", "--cross-check"])
+        self.assertEqual(code, 0)
+        self.assertIn("· 한글", out)
+        with mock.patch.object(pipeline, "cross_check", return_value=english):
+            code, out, _ = run_cli(["--query", "Amazing Grace", "--cross-check"])
+        self.assertEqual(code, 0)
+        self.assertIn("· 원어", out)
+
     def test_json_carries_the_same_flags(self) -> None:
         result = self._result(cross_checked=False, pages_seen=2)
         with mock.patch.object(pipeline, "cross_check", return_value=result):

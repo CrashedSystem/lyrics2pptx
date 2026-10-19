@@ -17,7 +17,7 @@ from lyrics2pptx.crawl.base import (
     SourceNotFoundError,
     SourceUnavailableError,
 )
-from lyrics2pptx.crawl.chain import ChainSource
+from lyrics2pptx.crawl.chain import ChainSource, is_korean_text
 
 KOREAN = "주는 생명샘\n마르지 않는 샘"
 ENGLISH = "Amazing Grace\nHow sweet the sound"
@@ -231,6 +231,22 @@ class KoreanFirstTests(unittest.TestCase):
             lrclib={"songs": EN_HIT}, blog={"error": SourceNotFoundError("no")}
         )
         self.assertEqual(songs, EN_HIT)
+
+
+class LanguageTests(unittest.TestCase):
+    """``is_korean_text`` is the ADR-026 rule, and callers report it too."""
+
+    def test_a_hangul_majority_is_korean(self) -> None:
+        self.assertTrue(is_korean_text(KOREAN))
+        self.assertTrue(is_korean_text("주님 사랑해요\n주님 사랑해요\nLord I love you"))
+
+    def test_a_hangul_minority_is_not_korean(self) -> None:
+        self.assertFalse(is_korean_text(ENGLISH))
+        self.assertFalse(is_korean_text("Amazing grace\nHow sweet the sound\n주님"))
+
+    def test_empty_and_blank_text_is_not_korean(self) -> None:
+        self.assertFalse(is_korean_text(""))
+        self.assertFalse(is_korean_text("\n   \n"))
 
 
 if __name__ == "__main__":

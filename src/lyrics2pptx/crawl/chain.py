@@ -54,9 +54,13 @@ _TIER_LRCLIB = "lrclib"
 _TIER_UNCHECKED = "blog 미검증"
 
 
-def _is_korean(songs: list[RawSong]) -> bool:
-    """True when most lines of the leading candidate carry Hangul (ADR-026)."""
-    lyrics = songs[0].lyrics if songs else ""
+def is_korean_text(lyrics: str) -> bool:
+    """True when most non-empty lines carry Hangul (ADR-026).
+
+    The rule is the policy itself — the language of the lyrics decides which
+    candidates are tried first — so callers also use it to *report* the language
+    of what they are about to show (``--cross-check``, ``--json``).
+    """
     lines = [line for line in lyrics.splitlines() if line.strip()]
     if not lines:
         return False
@@ -99,7 +103,7 @@ class ChainSource:
                 member,
                 label,
                 len(songs),
-                _is_korean(songs),
+                is_korean_text(songs[0].lyrics),
             )
             progress.report(f"{label} — 후보 {len(songs)}건")
             return list(songs)
@@ -148,7 +152,7 @@ class ChainSource:
             group = {
                 name: songs
                 for name, (songs, _error) in answers.items()
-                if songs and _is_korean(songs) is korean
+                if songs and is_korean_text(songs[0].lyrics) is korean
             }
             if not group:
                 continue

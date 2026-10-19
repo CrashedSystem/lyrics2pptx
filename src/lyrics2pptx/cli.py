@@ -16,6 +16,7 @@ from importlib.metadata import PackageNotFoundError, version as package_version
 from pathlib import Path
 
 from . import __version__, config, pipeline
+from .crawl.chain import is_korean_text
 from .errors import ConfigError, Lyrics2PptxError
 
 log = logging.getLogger("lyrics2pptx.cli")
@@ -175,7 +176,12 @@ def _emit_collection_json(args: argparse.Namespace) -> int:
         "source": args.source,
         "query": args.query,
         "count": len(songs),
-        "results": [asdict(song) for song in songs],
+        # The language each candidate would print (ADR-026): the policy picks
+        # Korean candidates first, so the caller must be able to see which
+        # candidate is which without counting Hangul by eye.
+        "results": [
+            {**asdict(song), "korean": is_korean_text(song.lyrics)} for song in songs
+        ],
     }
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0
@@ -202,12 +208,22 @@ def _emit_cross_check(args: argparse.Namespace) -> int:
     # The header itself must not say "교차검증" for a single page: the previous
     # wording printed "1곳 교차검증" for exactly that, and a bible.com verse page
     # hid behind the word (ADR-020).
+    # The language of what is printed is part of the answer: the policy prefers
+    # Korean candidates (ADR-026), so "why is this deck English?" must be
+    # answerable from the output itself, not by counting Hangul by eye.
+    if result.lines:
+        language = "한글" if is_korean_text("\n".join(result.lines)) else "원어"
+    else:
+        language = "가사 없음"
     if result.cross_checked:
-        print(f"# {result.query} — {result.source_count}곳 교차검증, {len(result.lines)}줄")
+        print(
+            f"# {result.query} — {result.source_count}곳 교차검증,"
+            f" {len(result.lines)}줄 · {language}"
+        )
     else:
         print(
             f"# {result.query} — 교차검증 안 됨 (후보 {result.pages_seen}개),"
-            f" {len(result.lines)}줄"
+            f" {len(result.lines)}줄 · {language}"
         )
         if result.pages_seen > 1:
             print(

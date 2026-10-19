@@ -2,17 +2,24 @@
  * 가사 2줄 PPTX 생성기 — 프런트엔드 로직 (vanilla JS, 프레임워크 없음).
  *
  * 상태 키: mode, query, results, selectedIndex, selectedLines, previewPairs,
- * busy, page, slideIndex, slides.
+ * busy, page, slideIndex, slides, lastFile.
  * 정규화(N1~N10)와 2줄 페어링은 서버 단일 소스가 계산한다: 직접 입력 미리보기는
  * POST /api/preview (pipeline.preview → text.normalize) 결과를 그대로 쓴다.
  * 배경 선택은 서버(/api/slides)가 준 썸네일 격자로 고른다 — 고른 1장을 모든
  * 슬라이드가 복제한다. 클라이언트는 마커/정규화 규칙을 재구현하지 않는다.
+ *
+ * 서버 수명(ADR-032)도 여기서 다룬다: 이 페이지는 "살아 있다"(/api/ping)와
+ * "닫는 중"(/api/ping?closing=1)만 알려주고, 실제 종료 판단은 서버(webapp.py)가
+ * 한다. 그래서 화면에는 "창을 닫으면 N분 뒤 정리"처럼 사실만 적는다.
  */
 "use strict";
 
 var PAGE_SIZE = 3; // 미리보기 페이지당 슬라이드 수
 var PREVIEW_DEBOUNCE_MS = 250; // 직접 입력 미리보기 디바운스
 var DEFAULT_SLIDE_INDEX = 19; // 템플릿에서 "정확히 2줄" 예시가 있는 슬라이드
+var SESSION_META = "lyrics2pptx-session"; // 서버가 index.html 에 심는 종료 토큰
+var STATUS_POLL_MS = 60000; // 상태 칩 갱신 주기(하트비트도 겸한다)
+var KEEP_WARNING_SECONDS = 180; // 자동 정리 임박 안내를 띄우는 남은 시간
 
 var state = {
   mode: "search",
@@ -25,8 +32,16 @@ var state = {
   page: 0,
   slideIndex: DEFAULT_SLIDE_INDEX,
   slides: [],
-  progressStartedAt: 0,
+  lastFile: "", // 마지막으로 만든 파일 이름(폴더 열기 대상)
 };
+
+// 서버가 준 종료 토큰: 종료/폴더 열기 요청에만 쓴다(다른 사이트가 못 흉내내게).
+var sessionToken = (function () {
+  var meta = document.querySelector('meta[name="' + SESSION_META + '"]');
+  return meta ? meta.getAttribute("content") || "" : "";
+})();
+var serverGone = false;
+var statusTimer = null;
 
 // 직접 입력 미리보기 요청 순번: 늦게 도착한 이전 응답을 무시한다.
 var previewRequestId = 0;
@@ -52,6 +67,7 @@ var el = {
   previewPanel: document.getElementById("preview-panel"),
   previewSummary: document.getElementById("preview-summary"),
   preview: document.getElementById("preview"),
+  previewEmpty: document.getElementById("preview-empty"),
   prevPage: document.getElementById("prev-page"),
   nextPage: document.getElementById("next-page"),
   pageLabel: document.getElementById("page-label"),
@@ -60,6 +76,13 @@ var el = {
   generateButton: document.getElementById("generate-button"),
   downloadPanel: document.getElementById("download-panel"),
   downloadLink: document.getElementById("download-link"),
+  downloadSummary: document.getElementById("download-summary"),
+  revealButton: document.getElementById("reveal-button"),
+  serverState: document.getElementById("server-state"),
+  serverStateText: document.getElementById("server-state-text"),
+  serverGone: document.getElementById("server-gone"),
+  shutdownButton: document.getElementById("shutdown-button"),
+  keepButton: document.getElementById("keep-button"),
   error: document.getElementById("error"),
   progress: document.getElementById("progress"),
   progressLabel: document.getElementById("progress-label"),
@@ -79,6 +102,143 @@ function showError(message) {
 function clearError() {
   el.error.textContent = "";
   el.error.hidden = true;
+}
+
+function formatDuration(seconds) {
+  if (typeof seconds !== "number" || !isFinite(seconds) || seconds < 0) return "";
+  var minutes = Math.round(seconds / 60);
+  if (minutes <= 1) return "1분";
+  if (minutes < 60) return minutes + "분";
+  return Math.round((minutes / 60) * 10) / 10 + "시간";
+}
+
+/* ------------------------------------------------------------ server session */
+
+// 서버(ADR-032)와의 계약: 창을 닫으면 몇 분 뒤, 오래 쓰지 않아도 스스로 정리된다.
+// 화면은 그 사실을 숨기지 않고 상태 칩에 적는다. 여기서 타이머 하나로 "살아
+// 있음"을 판단하지 않는 이유: 브라우저는 배경 탭의 타이머를 늦추거나 얼리므로
+// heartbeat 가 없다고 닫힌 탭이라고 단정할 수 없다(pagehide 신호를 따로 보낸다).
+
+function pageHeaders(extra) {
+  var headers = extra || {};
+  if (sessionToken) headers["X-Lyrics2Pptx-Token"] = sessionToken;
+  return headers;
+}
+
+// 네트워크 실패(서버가 이미 정리됨)를 한 곳에서 처리한다: 화면에 그 사실을
+// 띄우고 버튼을 잠근다. 원인을 감추고 "생성에 실패했습니다" 만 보여주면
+// 사용자는 무엇을 해야 하는지 알 수 없다.
+async function apiFetch(url, options) {
+  try {
+    return await fetch(url, options);
+  } catch (err) {
+    markServerGone();
+    throw new Error("서버가 정리되었습니다. 실행 파일을 다시 눌러 주세요.");
+  }
+}
+
+function setServerState(name, text) {
+  el.serverState.dataset.state = name;
+  el.serverStateText.textContent = text;
+}
+
+function markServerGone() {
+  if (serverGone) return;
+  serverGone = true;
+  if (statusTimer !== null) {
+    clearInterval(statusTimer);
+    statusTimer = null;
+  }
+  el.serverGone.hidden = false;
+  el.keepButton.hidden = true;
+  setServerState("gone", "서버 종료됨");
+  updateBusyUi();
+}
+
+function describeLifetime(payload) {
+  if (!payload.auto_shutdown) return "자동 정리 꺼짐";
+  return "창을 닫으면 " + formatDuration(payload.tab_grace_s) + " 뒤 정리";
+}
+
+async function refreshServerState() {
+  if (serverGone) return;
+  var response;
+  try {
+    response = await apiFetch("/api/ping");
+    if (!response.ok) throw new Error("상태를 읽지 못했습니다.");
+    var payload = await response.json();
+  } catch (err) {
+    return; // apiFetch 가 이미 안내를 띄웠다
+  }
+  if (payload.shutdown_reason) {
+    markServerGone();
+    return;
+  }
+  var idleLeft = payload.idle_seconds_left;
+  var warning =
+    payload.auto_shutdown &&
+    typeof idleLeft === "number" &&
+    idleLeft <= KEEP_WARNING_SECONDS;
+  if (warning) {
+    setServerState("warning", "곧 자동 정리 (" + formatDuration(idleLeft) + ")");
+    el.keepButton.hidden = false;
+  } else {
+    setServerState("", describeLifetime(payload));
+    el.keepButton.hidden = true;
+  }
+}
+
+async function keepSessionAlive() {
+  var response;
+  try {
+    response = await apiFetch("/api/ping?keep=1");
+    if (!response.ok) throw new Error("연장하지 못했습니다.");
+    var payload = await response.json();
+  } catch (err) {
+    return;
+  }
+  setServerState("", describeLifetime(payload));
+  el.keepButton.hidden = true;
+}
+
+async function shutdownServer() {
+  clearError();
+  el.shutdownButton.disabled = true;
+  try {
+    var response = await apiFetch("/api/shutdown", {
+      method: "POST",
+      headers: pageHeaders({ "Content-Type": "application/json" }),
+      body: "{}",
+    });
+    var payload = await response.json().catch(function () {
+      return {};
+    });
+    if (!response.ok) {
+      throw new Error(
+        (payload.error && payload.error.message) || "서버를 종료하지 못했습니다."
+      );
+    }
+    markServerGone();
+  } catch (err) {
+    el.shutdownButton.disabled = serverGone;
+    if (!serverGone) showError(err.message || "서버를 종료하지 못했습니다.");
+  }
+}
+
+// 브라우저가 탭을 닫는다고 알려주는 유일한 신호. 헤더를 실어야 하므로
+// sendBeacon 대신 keepalive fetch 를 쓴다(토큰이 없으면 서버가 무시한다).
+function reportTabClosing() {
+  if (serverGone || !sessionToken) return;
+  try {
+    fetch("/api/ping?closing=1", {
+      method: "POST",
+      keepalive: true,
+      headers: pageHeaders({ "Content-Type": "application/json" }),
+      body: "{}",
+    });
+  } catch (err) {
+    /* 신호를 못 보내도 서버는 무사용 시간(idle) 규칙으로 정리된다. */
+  }
 }
 
 /* ---------------------------------------------------------------- progress */
@@ -285,7 +445,7 @@ function selectSlide(index) {
 
 async function loadSlides() {
   try {
-    var response = await fetch("/api/slides");
+    var response = await apiFetch("/api/slides");
     var payload = await response.json();
     if (!response.ok) {
       throw new Error(
@@ -355,6 +515,16 @@ function renderResults() {
 
     el.results.appendChild(li);
   });
+  highlightSelectedResult();
+}
+
+// 선택 표시는 클래스를 직접 갱신한다(다시 그리면 방금 누른 라디오가 사라진다).
+function highlightSelectedResult() {
+  Array.prototype.forEach.call(el.results.children, function (li) {
+    var input = li.querySelector("input");
+    var on = !!input && Number(input.value) === state.selectedIndex;
+    li.classList.toggle("selected", on);
+  });
 }
 
 function selectResult(index) {
@@ -365,6 +535,7 @@ function selectResult(index) {
   state.selectedLines = (hit.preview_lines || []).slice();
   state.previewPairs = null;
   state.page = 0;
+  highlightSelectedResult();
   renderPreview();
 }
 
@@ -387,7 +558,7 @@ async function startSearchJob(query, source) {
     encodeURIComponent(query) +
     "&source=" +
     encodeURIComponent(source);
-  var response = await fetch(url);
+  var response = await apiFetch(url);
   var payload = await response.json().catch(function () {
     return {};
   });
@@ -399,7 +570,7 @@ async function startSearchJob(query, source) {
 
 async function waitForSearchJob(jobId) {
   for (;;) {
-    var response = await fetch("/api/search/job?id=" + encodeURIComponent(jobId));
+    var response = await apiFetch("/api/search/job?id=" + encodeURIComponent(jobId));
     var payload = await response.json().catch(function () {
       return {};
     });
@@ -425,7 +596,7 @@ async function doSearch() {
   }
   state.query = query;
   state.busy = true;
-  el.searchButton.disabled = true;
+  updateBusyUi();
   progressStart("가사를 찾는 중…");
   try {
     var jobId = await startSearchJob(query, el.source.value);
@@ -448,7 +619,7 @@ async function doSearch() {
     showError(err.message || "검색에 실패했습니다.");
   } finally {
     state.busy = false;
-    el.searchButton.disabled = false;
+    updateBusyUi();
   }
 }
 
@@ -461,7 +632,7 @@ async function refreshManualPreview() {
   var requestId = previewRequestId + 1;
   previewRequestId = requestId;
   try {
-    var response = await fetch("/api/preview", {
+    var response = await apiFetch("/api/preview", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -504,30 +675,49 @@ function currentPairs() {
 
 function renderPreview() {
   var pairs = currentPairs();
+  // 미리보기 패널은 항상 보이게 두고, 내용이 없으면 안내 문구로 대신한다.
+  // (빈 오른쪽 칸이 "고장난 화면"처럼 보이는 것을 막는다.)
+  el.previewPanel.hidden = false;
   if (!state.selectedLines.length || !pairs.length) {
-    el.previewPanel.hidden = true;
+    el.preview.textContent = "";
+    el.previewEmpty.hidden = false;
+    el.previewSummary.textContent = "";
+    el.pageLabel.textContent = "";
+    el.prevPage.disabled = true;
+    el.nextPage.disabled = true;
     return;
   }
-  el.previewPanel.hidden = false;
+  el.previewEmpty.hidden = true;
 
   var slideCount = pairs.length;
   el.previewSummary.textContent =
-    "줄 " + state.selectedLines.length + "개 → 슬라이드 " + slideCount + "장 (배경 " + backgroundLabel() + ")";
-  el.pageLabel.textContent = "배경 " + backgroundLabel() + " 을(를) 모든 슬라이드에 사용";
+    "가사 " + state.selectedLines.length + "줄 → 슬라이드 " + slideCount +
+    "장 (두 줄이 한 장, 배경 " + backgroundLabel() + ")";
 
   var pageCount = Math.max(1, Math.ceil(slideCount / PAGE_SIZE));
   if (state.page >= pageCount) state.page = pageCount - 1;
   var start = state.page * PAGE_SIZE;
   var slice = pairs.slice(start, start + PAGE_SIZE);
+  el.pageLabel.textContent = (state.page + 1) + " / " + pageCount + "쪽";
 
   el.preview.textContent = "";
   slice.forEach(function (pair, offset) {
+    // 실제 슬라이드처럼 보이게 두 줄을 각각 한 줄로 그린다(합쳐서 "/" 로
+    // 붙이면 두 줄이 어디서 잘리는지 눈으로 확인할 수 없다).
     var li = document.createElement("li");
+    li.className = "preview-item";
     var number = document.createElement("span");
     number.className = "slide-number";
     number.textContent = String(start + offset + 1);
     var body = document.createElement("span");
-    body.textContent = pair[1] === null ? pair[0] : pair[0] + " / " + pair[1];
+    body.className = "slide-body";
+    pair.forEach(function (line) {
+      if (line === null || line === undefined) return;
+      var span = document.createElement("span");
+      span.className = "slide-line";
+      span.textContent = line;
+      body.appendChild(span);
+    });
     li.appendChild(number);
     li.appendChild(body);
     el.preview.appendChild(li);
@@ -565,10 +755,10 @@ async function doGenerate() {
   }
 
   state.busy = true;
-  el.generateButton.disabled = true;
+  updateBusyUi();
   progressStart("PPTX 생성 중…");
   try {
-    var response = await fetch("/api/generate", {
+    var response = await apiFetch("/api/generate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -577,10 +767,14 @@ async function doGenerate() {
       var payload = await response.json().catch(function () { return {}; });
       throw new Error((payload.error && payload.error.message) || "생성에 실패했습니다.");
     }
+    // 서버가 실제로 저장한 이름을 쓴다(정리·확장자 규칙이 클라이언트와 다를 수 있다).
+    var saved = decodeDispositionName(response.headers.get("Content-Disposition"));
+    state.lastFile = saved || el.filename.value.trim() || "가사.pptx";
     var blob = await response.blob();
     var url = URL.createObjectURL(blob);
     el.downloadLink.href = url;
-    el.downloadLink.download = el.filename.value.trim() || "가사.pptx";
+    el.downloadLink.download = state.lastFile;
+    el.downloadSummary.textContent = state.lastFile + " · output 폴더에도 저장됨";
     el.downloadPanel.hidden = false;
     el.downloadLink.click();
     progressFinish("PPTX 생성 완료");
@@ -589,11 +783,47 @@ async function doGenerate() {
     showError(err.message || "생성에 실패했습니다.");
   } finally {
     state.busy = false;
-    el.generateButton.disabled = false;
+    updateBusyUi();
+  }
+}
+
+function decodeDispositionName(value) {
+  var match = /filename\*=UTF-8''([^;]+)/i.exec(value || "");
+  if (!match) return "";
+  try {
+    return decodeURIComponent(match[1]);
+  } catch (err) {
+    return "";
+  }
+}
+
+// "폴더 열기": 서버가 output 안의 그 파일만 열어 준다(경로 탈출 불가).
+async function revealLastFile() {
+  if (!state.lastFile) return;
+  clearError();
+  try {
+    var response = await apiFetch("/api/reveal", {
+      method: "POST",
+      headers: pageHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ filename: state.lastFile }),
+    });
+    if (!response.ok) {
+      var payload = await response.json().catch(function () { return {}; });
+      throw new Error((payload.error && payload.error.message) || "폴더를 열지 못했습니다.");
+    }
+  } catch (err) {
+    if (!serverGone) showError(err.message || "폴더를 열지 못했습니다.");
   }
 }
 
 /* ------------------------------------------------------------------- wiring */
+
+function updateBusyUi() {
+  var locked = state.busy || serverGone;
+  el.searchButton.disabled = locked;
+  el.generateButton.disabled = locked;
+  el.shutdownButton.disabled = locked;
+}
 
 function setMode(mode) {
   state.mode = mode;
@@ -642,6 +872,24 @@ el.filename.addEventListener("keydown", function (event) {
   if (event.key === "Enter") doGenerate();
 });
 
+/* ----------------------------------------------------------- session wiring */
+
+el.shutdownButton.addEventListener("click", shutdownServer);
+el.keepButton.addEventListener("click", keepSessionAlive);
+el.revealButton.addEventListener("click", revealLastFile);
+
+// 탭이 닫힐 때만 "닫는 중"을 알린다. 다시 보이거나 되살아나면(pageshow) 곧바로
+// heartbeat 를 보내 서버가 정리 결정을 취소하게 한다(새로고침·뒤로가기 포함).
+window.addEventListener("pagehide", reportTabClosing);
+window.addEventListener("pageshow", function () { refreshServerState(); });
+document.addEventListener("visibilitychange", function () {
+  if (document.visibilityState === "visible") refreshServerState();
+});
+
 setMode("search");
 renderPreview();
 loadSlides();
+refreshServerState();
+statusTimer = setInterval(function () {
+  if (document.visibilityState === "visible") refreshServerState();
+}, STATUS_POLL_MS);

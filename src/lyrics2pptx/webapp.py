@@ -3,7 +3,8 @@
 An ``http.server`` front end for ``pipeline`` (docs/arch/05 §2, docs/plan/06
 §2): ``/``, ``/static/*``, ``/api/search``, ``/api/search/start``,
 ``/api/search/job``, ``/api/slides``, ``/api/slides/{index}/thumbnail``,
-``/api/preview`` and ``/api/generate``.
+``/api/preview``, ``/api/generate``, ``/api/reveal``, and the session endpoints
+``/api/ping`` and ``/api/shutdown`` (ADR-032).
 Nothing here contains domain logic: requests are validated, handed to
 ``pipeline.preview``/``pipeline.run``/``search_hits``, and the result is streamed
 back.
@@ -13,6 +14,15 @@ seconds or more (a blog search fetches several pages politely). The single-shot
 ``/api/search`` is kept for scripts and tests; the browser starts a job and polls
 it so it can show *which page* is being read instead of a frozen "검색 중…".
 
+Session lifetime (ADR-032, docs/arch/05 §6): the server is meant to *retire
+itself* — the page heartbeats ``/api/ping``, tell us when the tab is closing, and
+the watchdog stops the process after ``config.WEBUI_TAB_GRACE`` (tab gone),
+``config.WEBUI_IDLE`` (nobody using it) or ``config.WEBUI_MAX_LIFETIME``.
+``main`` publishes port + instance id in ``config.WEBUI_STATE_FILE`` so
+``lyrics2pptx.vbs`` reopens the running instance instead of starting a second one.
+``/api/shutdown`` (the in-page "종료" button) is guarded by a per-process token,
+so a random web page cannot kill the user's server with a cross-site POST.
+
 Security boundary (docs/arch/06 §3): bound to ``127.0.0.1``, static serving is
 containment-checked against ``web/``, and request bodies are capped at
 ``config.REQUEST_MAX_BYTES``. Builds are serialized by one global lock because
@@ -21,12 +31,18 @@ the template is a 37 MB in-process resource (AD-14).
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import logging
+import os
+import secrets
+import subprocess
 import sys
 import threading
 import time
 from dataclasses import asdict, dataclass, field
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
@@ -38,7 +54,15 @@ from .pptx import thumbnails
 
 log = logging.getLogger("lyrics2pptx.webapp")
 
-__all__ = ["Lyrics2PptxHandler", "build_server", "main"]
+__all__ = [
+    "Lyrics2PptxHandler",
+    "Session",
+    "build_server",
+    "clear_state",
+    "main",
+    "start_watchdog",
+    "write_state",
+]
 
 # One build at a time: the template and output directory are process-wide.
 _BUILD_LOCK = threading.Lock()
@@ -78,6 +102,13 @@ _TOO_LARGE_ERROR = {
         "recoverable": False,
     }
 }
+_FORBIDDEN_ERROR = {
+    "error": {
+        "code": "FORBIDDEN",
+        "message": "이 창에서 보낸 요청이 아닙니다. 서버를 종료하려면 열려 있는 페이지에서 눌러 주세요.",
+        "recoverable": False,
+    }
+}
 
 
 def _json_bytes(payload: object) -> bytes:
@@ -98,6 +129,166 @@ def _coerce_int(value: object, default: int) -> int:
         return int(value)  # type: ignore[arg-type]
     except (TypeError, ValueError):
         return default
+
+
+# --- session lifetime (ADR-032) -------------------------------------------
+# The page tells us two different things and they must not be confused:
+#
+#   * "I am still here"   - ``/api/ping``          -> heartbeat
+#   * "I am going away"   - ``/api/ping?closing=1``-> tab closed (pagehide beacon)
+#
+# A heartbeat therefore *cancels* a pending close (a reload or a return to the
+# tab) but is **not** user activity: only real requests (search, slides, preview,
+# generate, download) count, so a tab left open on a desk still retires itself.
+# We deliberately do not require a periodic heartbeat — browsers throttle and
+# eventually freeze timers in background tabs, and a frozen tab must not look
+# like a closed one.
+
+_TOKEN_HEADER = "X-Lyrics2Pptx-Token"
+_HEARTBEAT_PATH = "/api/ping"
+_SESSION_PLACEHOLDER = b"<!-- LYRICS2PPTX_SESSION -->"
+_STATE_FILENAME = "webui.state"
+_STOP_GRACE_SECONDS = 1.0  # let an in-flight response (a download) reach the browser
+
+
+def _instance_id(token: str) -> str:
+    """Public half of the token: proves identity without leaking the secret."""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()[:16]
+
+
+def _is_true(values: list[str] | None) -> bool:
+    return bool(values) and values[0].strip().lower() in ("1", "true", "yes", "on")
+
+
+def _reveal_in_explorer(target: Path) -> None:
+    """Show ``target`` in the OS file manager (best effort, never fatal).
+
+    Local tool for one user: opening the folder is the friendliest way to answer
+    "결과를 어디서 받지?". A missing desktop integration only costs a log line —
+    the file is always in ``output/`` and downloadable from the page.
+    """
+    try:
+        if sys.platform.startswith("win"):
+            subprocess.Popen(["explorer", "/select,", str(target)])
+        elif sys.platform == "darwin":  # pragma: no cover - not a target platform
+            subprocess.Popen(["open", "-R", str(target)])
+        else:  # pragma: no cover - not a target platform
+            subprocess.Popen(["xdg-open", str(target.parent)])
+    except OSError as exc:  # pragma: no cover - desktop dependent
+        log.warning("탐색기를 열지 못했습니다 (%s): %s", target, exc)
+
+
+@dataclass
+class Session:
+    """Process-lifetime bookkeeping shared by the page, the launcher, the watchdog.
+
+    Times are ``time.monotonic`` seconds; the defaults come from ``config`` in
+    ``build_server`` so a test can shrink a timeout on the instance directly.
+    """
+
+    token: str
+    tab_grace: float = 180.0
+    idle: float = 1200.0
+    max_lifetime: float = 10800.0
+    auto_shutdown: bool = True
+    started: float = field(default_factory=time.monotonic)
+    last_activity: float = field(default_factory=time.monotonic)
+    closed_at: float | None = None
+    reason: str | None = None
+    in_flight: int = 0
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
+    @property
+    def instance(self) -> str:
+        return _instance_id(self.token)
+
+    # --- bookkeeping ------------------------------------------------------
+
+    def enter(self) -> None:
+        with self._lock:
+            self.in_flight += 1
+
+    def leave(self) -> None:
+        with self._lock:
+            self.in_flight = max(0, self.in_flight - 1)
+
+    def note_activity(self) -> None:
+        """A real request: the user is working, so the idle rule restarts."""
+        with self._lock:
+            self.last_activity = time.monotonic()
+
+    def heartbeat(self, *, keep: bool = False) -> None:
+        """The page is alive; drop any pending "the tab closed" decision."""
+        with self._lock:
+            self.closed_at = None
+            if keep:
+                self.last_activity = time.monotonic()
+
+    def note_tab_closed(self) -> None:
+        with self._lock:
+            self.closed_at = time.monotonic()
+
+    def busy(self, *, jobs: int = 0) -> bool:
+        with self._lock:
+            return self.in_flight > 0 or jobs > 0
+
+    def request_stop(self, reason: str) -> None:
+        with self._lock:
+            self.reason = reason
+
+    # --- decisions --------------------------------------------------------
+
+    def stop_reason(self, *, jobs: int = 0, now: float | None = None) -> str | None:
+        """Return why the server should stop now, or ``None`` to keep serving.
+
+        An explicit request wins over the timeouts, but never interrupts work in
+        progress: a build or a download finishes first (it is retried on the next
+        tick of the watchdog).
+        """
+        moment = time.monotonic() if now is None else now
+        with self._lock:
+            if self.in_flight > 0 or jobs > 0:
+                return None
+            if self.reason is not None:
+                return self.reason
+            if (
+                self.closed_at is not None
+                and self.tab_grace > 0
+                and moment - self.closed_at >= self.tab_grace
+            ):
+                return "탭을 닫아서"
+            if self.idle > 0 and moment - self.last_activity >= self.idle:
+                return "오랫동안 사용이 없어서"
+            if self.max_lifetime > 0 and moment - self.started >= self.max_lifetime:
+                return "최대 가동 시간을 넘어서"
+        return None
+
+    def snapshot(self, *, jobs: int = 0) -> dict:
+        """JSON-ready view for ``/api/ping`` (also drives the in-page status chip)."""
+        moment = time.monotonic()
+        with self._lock:
+            idle_left = (
+                None
+                if self.idle <= 0
+                else round(max(0.0, self.idle - (moment - self.last_activity)))
+            )
+            lifetime_left = (
+                None
+                if self.max_lifetime <= 0
+                else round(max(0.0, self.max_lifetime - (moment - self.started)))
+            )
+            return {
+                "instance": self.instance,
+                "auto_shutdown": self.auto_shutdown,
+                "busy": self.in_flight > 0 or jobs > 0,
+                "tab_grace_s": self.tab_grace,
+                "idle_timeout_s": self.idle,
+                "idle_seconds_left": idle_left,
+                "lifetime_seconds_left": lifetime_left,
+                "closing": self.closed_at is not None,
+                "uptime_s": round(moment - self.started),
+                "shutdown_reason": self.reason,
+            }
 
 
 # --- search jobs ----------------------------------------------------------
@@ -164,6 +355,12 @@ def _prune_jobs() -> None:
             del _jobs[job_id]
 
 
+def _running_job_count() -> int:
+    """How many collects are still working, for the shutdown decision (ADR-032)."""
+    with _jobs_lock:
+        return sum(1 for job in _jobs.values() if job.state == "running")
+
+
 def _record_step(job: _SearchJob, update) -> None:
     """Progress sink: append/replace the newest line for ``job``.
 
@@ -219,8 +416,9 @@ def _run_search_job(job: _SearchJob) -> None:
 
 class Lyrics2PptxHandler(BaseHTTPRequestHandler):
     """Route dispatcher for ``/``, ``/static/*``, ``/api/search``,
-    ``/api/search/start``, ``/api/search/job``, ``/api/slides``,
-    ``/api/slides/{index}/thumbnail``, ``/api/preview``, and ``/api/generate``."""
+    ``/api/search/start``, ``/api/search/job``, ``/api/ping``,
+    ``/api/shutdown``, ``/api/slides``, ``/api/slides/{index}/thumbnail``,
+    ``/api/preview``, and ``/api/generate``."""
 
     server_version = f"lyrics2pptx/{__version__}"
     protocol_version = "HTTP/1.1"
@@ -234,6 +432,15 @@ class Lyrics2PptxHandler(BaseHTTPRequestHandler):
     def _begin(self) -> tuple[str, float]:
         self._started = time.monotonic()
         self._status = 500
+        # ADR-032: the session lives on the server object. ``in_flight`` keeps the
+        # watchdog from stopping the process in the middle of a build or download;
+        # anything that is not a heartbeat counts as "the user is working".
+        self._session = getattr(self.server, "session", None)
+        self._is_heartbeat = urlparse(self.path).path == _HEARTBEAT_PATH
+        # 하트비트는 세지 않는다: 순간적인 상태 조회라서 "작업 진행 중"이 아니고,
+        # 세면 /api/ping 응답의 busy 가 자기 자신 때문에 항상 true 가 된다.
+        if self._session is not None and not self._is_heartbeat:
+            self._session.enter()
         return uuid4().hex[:8], self._started
 
     def _finish(self, method: str, rid: str) -> None:
@@ -246,6 +453,9 @@ class Lyrics2PptxHandler(BaseHTTPRequestHandler):
             elapsed_ms,
             rid,
         )
+        if self._session is not None and not self._is_heartbeat:
+            self._session.leave()
+            self._session.note_activity()
 
     def _send(
         self,
@@ -300,6 +510,8 @@ class Lyrics2PptxHandler(BaseHTTPRequestHandler):
                 self._handle_search_start(parse_qs(parsed.query))
             elif parsed.path == "/api/search/job":
                 self._handle_search_job(parse_qs(parsed.query))
+            elif parsed.path == _HEARTBEAT_PATH:
+                self._handle_ping(parse_qs(parsed.query))
             elif parsed.path == "/api/slides":
                 self._handle_slides()
             elif parsed.path.startswith("/api/slides/"):
@@ -337,8 +549,24 @@ class Lyrics2PptxHandler(BaseHTTPRequestHandler):
             self._send(404, b"Not Found", "text/plain; charset=utf-8", head_only=head_only)
             return
         body = candidate.read_bytes()
+        if candidate.name == "index.html":
+            body = self._inject_session(body)
         content_type = _CONTENT_TYPES.get(candidate.suffix.lower(), _DEFAULT_CONTENT_TYPE)
         self._send(200, body, content_type, head_only=head_only)
+
+    def _inject_session(self, body: bytes) -> bytes:
+        """Hand the page its shutdown token (ADR-032).
+
+        The token never appears in a URL and the file on disk keeps its
+        placeholder, so the served page is the only place it is readable.
+        """
+        session = self._session
+        if session is None or _SESSION_PLACEHOLDER not in body:  # pragma: no cover
+            return body
+        meta = (
+            f'<meta name="lyrics2pptx-session" content="{session.token}">'
+        ).encode("utf-8")
+        return body.replace(_SESSION_PLACEHOLDER, meta)
 
     def _handle_search(self, params: dict[str, list[str]], rid: str) -> None:
         query = (params.get("q") or [""])[0]
@@ -383,6 +611,118 @@ class Lyrics2PptxHandler(BaseHTTPRequestHandler):
             return
         self._send_json(200, job.snapshot())
 
+    # --- session (ADR-032) -------------------------------------------------
+
+    def _handle_ping(self, params: dict[str, list[str]]) -> None:
+        """``GET|POST /api/ping`` — heartbeat, tab-closing beacon, status.
+
+        ``?closing=1`` (sent by the page on ``pagehide``) starts the grace timer;
+        it must carry the session token, because a random web page must not be
+        able to retire the user's server. A plain ping cancels a pending closing
+        (a reload or a return to the tab) and needs no token: it reveals nothing
+        but "a lyrics2pptx server is listening on this port". ``?keep=1`` is the
+        in-page "계속 쓰기" button and counts as use, which the idle rule reads.
+        """
+        session = self._session
+        if session is None:  # pragma: no cover - build_server always sets it
+            self._send_json(200, {"ok": True, "version": __version__})
+            return
+        self._drain_body()
+        if _is_true(params.get("closing")):
+            if not self._page_may_ask(session):
+                log.warning("closing beacon rejected origin=%s", self.headers.get("Origin"))
+                self._send_json(403, _FORBIDDEN_ERROR)
+                return
+            session.note_tab_closed()
+        else:
+            session.heartbeat(keep=_is_true(params.get("keep")))
+        self._send_json(
+            200,
+            {
+                "ok": True,
+                "version": __version__,
+                **session.snapshot(jobs=_running_job_count()),
+            },
+        )
+
+    def _handle_shutdown(self, rid: str) -> None:
+        """``POST /api/shutdown`` — the in-page "종료" button.
+
+        Only the page we served may stop the server: the request must carry the
+        per-process token (injected into ``index.html``) *and*, when a browser
+        sends one, an ``Origin`` of this very origin. Without that check any
+        website could kill the user's server with a cross-site POST, because the
+        loopback port is guessable.
+        """
+        session = self._session
+        self._drain_body()
+        if session is None or not self._page_may_ask(session):
+            log.warning("shutdown rejected rid=%s origin=%s", rid, self.headers.get("Origin"))
+            self._send_json(403, _FORBIDDEN_ERROR)
+            return
+        session.request_stop("사용자 요청")
+        log.info("shutdown requested by the page rid=%s", rid)
+        self._send_json(
+            200,
+            {
+                "ok": True,
+                "reason": session.reason,
+                **session.snapshot(jobs=_running_job_count()),
+            },
+        )
+        # Answer first, stop after: ``shutdown()`` waits for ``serve_forever`` to
+        # return and the response has to reach the browser (it paints "종료됨").
+        threading.Timer(_STOP_GRACE_SECONDS, self.server.shutdown).start()
+
+    def _handle_reveal(self, payload: dict, rid: str) -> None:
+        """``POST /api/reveal`` — show a built file in the OS file manager.
+
+        The "폴더 열기" button after a build. The name is sanitized and resolved
+        inside ``config.OUTPUT_DIR``, so the endpoint cannot be talked into
+        opening anything else on the machine.
+        """
+        session = self._session
+        # 본문은 라우팅에서 _read_json_body 가 이미 읽었다 — 여기서 또 읽으면
+        # keep-alive 연결에서 영원히 기다린다(_drain_body 는 본문을 안 읽는
+        # /api/shutdown 과 /api/ping 에만 필요하다).
+        if session is None or not self._page_may_ask(session):
+            log.warning("reveal rejected rid=%s", rid)
+            self._send_json(403, _FORBIDDEN_ERROR)
+            return
+        name = config.sanitize_filename(str(payload.get("filename") or ""))
+        base = Path(config.OUTPUT_DIR).resolve()
+        target = (base / name).resolve()
+        if not _is_within(base, target) or not target.is_file():
+            self._send_json(404, _NOT_FOUND_ERROR)
+            return
+        _reveal_in_explorer(target)
+        self._send_json(200, {"ok": True, "filename": name})
+
+    def _page_may_ask(self, session: Session) -> bool:
+        """True when the request comes from the page we served (ADR-032)."""
+        supplied = self.headers.get(_TOKEN_HEADER, "")
+        if not hmac.compare_digest(supplied, session.token):
+            return False
+        origin = self.headers.get("Origin")
+        if not origin:
+            return True  # scripts and tests; they already had to read the token
+        host = self.headers.get("Host") or ""
+        return origin.rstrip("/") in (f"http://{host}", f"https://{host}")
+
+    def _drain_body(self) -> None:
+        """Read and discard a small unread body so keep-alive stays in sync."""
+        raw = self.headers.get("Content-Length")
+        try:
+            length = int(raw) if raw else 0
+        except ValueError:
+            length = 0
+        if length <= 0:
+            return
+        if length > config.REQUEST_MAX_BYTES:
+            self.close_connection = True
+            return
+        self.rfile.read(length)
+
     def _handle_slides(self) -> None:
         """``GET /api/slides`` — metadata for every selectable template slide."""
         metas = thumbnails.list_slide_meta()
@@ -426,6 +766,15 @@ class Lyrics2PptxHandler(BaseHTTPRequestHandler):
             elif parsed.path == "/api/preview":
                 payload = self._read_json_body()
                 self._handle_preview(payload, rid)
+            elif parsed.path == _HEARTBEAT_PATH:
+                # ``navigator.sendBeacon`` (the "the tab is closing" signal) is a
+                # POST, so the heartbeat answers on both methods.
+                self._handle_ping(parse_qs(parsed.query))
+            elif parsed.path == "/api/shutdown":
+                self._handle_shutdown(rid)
+            elif parsed.path == "/api/reveal":
+                payload = self._read_json_body()
+                self._handle_reveal(payload, rid)
             else:
                 self._send_json(404, _NOT_FOUND_ERROR)
         except _BodyTooLarge:
@@ -536,14 +885,99 @@ class _BodyTooLarge(Exception):
     """Internal signal: the response was already sent, skip further handling."""
 
 
+class _Server(ThreadingHTTPServer):
+    """``ThreadingHTTPServer`` that carries the session metadata (ADR-032)."""
+
+    session: Session
+
+
 def build_server(
     host: str | None = None,
     port: int | None = None,
-) -> ThreadingHTTPServer:
+) -> _Server:
     """Create the HTTP server bound to ``host:port`` (defaults from config)."""
     bind_host = host if host is not None else config.BIND_HOST
     bind_port = port if port is not None else config.BIND_PORT
-    return ThreadingHTTPServer((bind_host, bind_port), Lyrics2PptxHandler)
+    server = _Server((bind_host, bind_port), Lyrics2PptxHandler)
+    server.session = Session(
+        token=secrets.token_hex(16),
+        tab_grace=config.WEBUI_TAB_GRACE,
+        idle=config.WEBUI_IDLE,
+        max_lifetime=config.WEBUI_MAX_LIFETIME,
+        auto_shutdown=config.WEBUI_AUTOSHUTDOWN,
+    )
+    return server
+
+
+def start_watchdog(server: _Server, *, interval: float = 1.0) -> threading.Thread | None:
+    """Start the thread that retires the server by itself (ADR-032).
+
+    The rules live in ``Session.stop_reason``; this only polls them and calls
+    ``shutdown()`` from *another* thread, which is what ``socketserver`` requires.
+    Work in progress defers the decision to the next tick.
+    """
+
+    def loop() -> None:
+        while True:
+            time.sleep(interval)
+            reason = server.session.stop_reason(jobs=_running_job_count())
+            if reason is None:
+                continue
+            server.session.request_stop(reason)
+            log.info("auto shutdown reason=%s", reason)
+            server.shutdown()
+            return
+
+    if not server.session.auto_shutdown:
+        log.info("자동 종료가 꺼져 있습니다 (LYRICS2PPTX_WEBUI_AUTOSHUTDOWN=0)")
+        return None
+    thread = threading.Thread(target=loop, name="lyrics2pptx-watchdog", daemon=True)
+    thread.start()
+    return thread
+
+
+def write_state(server: _Server) -> Path | None:
+    """Publish port + instance id so the launcher can reuse a running server.
+
+    Plain ``key=value`` lines: ``lyrics2pptx.vbs`` has no JSON parser. Written
+    atomically (temp file + replace) so the launcher never reads half a file.
+    """
+    session = server.session
+    host, port = server.server_address[0], server.server_address[1]
+    target = config.webui_state_path()
+    lines = (
+        "# lyrics2pptx - written while the local web UI is running. Do not edit.",
+        f"instance={session.instance}",
+        f"host={host}",
+        f"port={port}",
+        f"pid={os.getpid()}",
+        f"started={datetime.now().isoformat(timespec='seconds')}",
+        f"url=http://{host}:{port}/",
+    )
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        staging = target.with_name(target.name + ".tmp")
+        staging.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        os.replace(staging, target)
+    except OSError as exc:
+        log.warning("실행 상태 파일을 쓰지 못했습니다 (%s): %s", target, exc)
+        return None
+    return target
+
+
+def clear_state(instance: str) -> None:
+    """Remove the state file — but only if it still describes *this* server."""
+    target = config.webui_state_path()
+    try:
+        text = target.read_text(encoding="utf-8")
+    except OSError:
+        return
+    if f"instance={instance}" not in text.split("\n"):
+        return  # a newer instance owns the file now
+    try:
+        target.unlink()
+    except OSError as exc:  # pragma: no cover - best effort while exiting
+        log.warning("실행 상태 파일을 지우지 못했습니다 (%s): %s", target, exc)
 
 
 def _setup_logging() -> None:
@@ -558,7 +992,7 @@ def _setup_logging() -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Start the local web server (blocks until Ctrl+C)."""
+    """Start the local web server and serve until it retires itself (ADR-032)."""
     _setup_logging()
     unknown = config.unknown_env_keys()
     if unknown:
@@ -567,14 +1001,40 @@ def main(argv: list[str] | None = None) -> int:
 
     server = build_server()
     host, port = server.server_address[0], server.server_address[1]
-    log.info("serving http://%s:%d (Ctrl+C 로 종료)", host, port)
-    print(f"lyrics2pptx {__version__} 실행 중 → http://{host}:{port}", file=sys.stderr)
+    write_state(server)
+    session = server.session
+    log.info(
+        "serving http://%s:%d (탭을 닫으면 %.0f초 뒤, 사용이 없으면 %.0f초 뒤 종료)",
+        host,
+        port,
+        session.tab_grace,
+        session.idle,
+    )
+    print(
+        f"lyrics2pptx {__version__} 실행 중 → http://{host}:{port}  "
+        f"(이 창을 닫으면 자동 종료됩니다)",
+        file=sys.stderr,
+    )
+    # ``serve_forever`` runs in its own thread so the watchdog can call
+    # ``shutdown()`` (it must not run in the serving thread) and so Ctrl+C still
+    # lands in the main thread.
+    serving = threading.Thread(
+        target=server.serve_forever, name="lyrics2pptx-serve", daemon=True
+    )
+    serving.start()
+    start_watchdog(server)
     try:
-        server.serve_forever()
+        while serving.is_alive():
+            serving.join(timeout=1.0)
     except KeyboardInterrupt:
-        log.info("shutdown requested")
+        log.info("shutdown requested (Ctrl+C)")
+        session.request_stop("Ctrl+C")
     finally:
+        server.shutdown()
+        serving.join(timeout=10)
         server.server_close()
+        clear_state(session.instance)
+        log.info("stopped reason=%s", session.reason or "외부 신호")
     return 0
 
 

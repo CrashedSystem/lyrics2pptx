@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import os
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from lyrics2pptx import config
@@ -57,6 +58,29 @@ class DefaultsTests(unittest.TestCase):
 
     def test_request_cap_is_one_mib(self) -> None:
         self.assertEqual(config.REQUEST_MAX_BYTES, 1024 * 1024)
+
+    def test_web_ui_lifetime_defaults_match_the_environment_manifest(self) -> None:
+        # ADR-032: 탭이 닫히면 3분, 사용이 없으면 20분, 최대 3시간.
+        self.assertEqual(config.WEBUI_TAB_GRACE, 180.0)
+        self.assertEqual(config.WEBUI_IDLE, 1200.0)
+        self.assertEqual(config.WEBUI_MAX_LIFETIME, 10800.0)
+        self.assertTrue(config.WEBUI_AUTOSHUTDOWN)
+
+    def test_state_file_follows_a_redirected_output_directory(self) -> None:
+        # 기본값은 import 시점의 OUTPUT_DIR 에 묶이지 않고 *현재* 값을 따른다
+        # (테스트, LYRICS2PPTX_OUTPUT_DIR 로 출력 위치를 바꾼 실행).
+        with mock.patch.object(config, "OUTPUT_DIR", config.ROOT / "tmp-output"):
+            self.assertEqual(
+                config.webui_state_path(), config.ROOT / "tmp-output" / "webui.state"
+            )
+
+    def test_an_explicit_state_file_wins_over_the_output_directory(self) -> None:
+        with (
+            mock.patch.object(config, "_WEBUI_STATE_EXPLICIT", True),
+            mock.patch.object(config, "WEBUI_STATE_FILE", Path("D:/somewhere/webui.state")),
+            mock.patch.object(config, "OUTPUT_DIR", Path("D:/elsewhere")),
+        ):
+            self.assertEqual(config.webui_state_path(), Path("D:/somewhere/webui.state"))
 
     def test_log_level_object_is_a_logging_level(self) -> None:
         self.assertIsInstance(config.LOG_LEVEL_OBJ, int)

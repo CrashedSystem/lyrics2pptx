@@ -48,6 +48,11 @@ __all__ = [
     "REQUEST_MAX_BYTES",
     "ROBOTS_CACHE_TTL",
     "CLONE_STRATEGIES",
+    "WEBUI_IDLE",
+    "WEBUI_TAB_GRACE",
+    "WEBUI_MAX_LIFETIME",
+    "WEBUI_AUTOSHUTDOWN",
+    "webui_state_path",
     "sanitize_filename",
     "ensure_pptx_suffix",
     "unknown_env_keys",
@@ -165,6 +170,33 @@ DEFAULT_UA = _env_str("LYRICS2PPTX_USER_AGENT", "lyrics2pptx/0.1 (+local single-
 BIND_HOST = _env_str("LYRICS2PPTX_BIND_HOST", "127.0.0.1")
 BIND_PORT = _env_int("LYRICS2PPTX_BIND_PORT", 8765, minimum=1, maximum=65535)
 
+# --- web UI lifetime (ADR-032) -------------------------------------------
+# The local web app is a *session* tool: a beginner opens it, builds two or three
+# decks and wants it gone. "Close the console window" is the one instruction that
+# loses that user, so the server retires itself instead, and the launcher can find
+# the instance that is already running instead of starting a second one.
+#
+#   * WEBUI_TAB_GRACE   - the browser tab told us it is closing (pagehide beacon);
+#                         the server waits this long for a reload/return, then stops.
+#   * WEBUI_IDLE        - no *user* request (searches, builds, downloads) for this
+#                         long: the tab is open but nobody is using it. A heartbeat
+#                         does not count as use, so a forgotten tab still retires.
+#   * WEBUI_MAX_LIFETIME- hard ceiling, so a forgotten server cannot outlive the day.
+#   * WEBUI_AUTOSHUTDOWN- 0 disables all three rules (scripts, long batch sessions)
+#                         while the in-page "종료" button still works.
+# A value of 0 for one of the three timeouts disables just that rule.
+WEBUI_TAB_GRACE = _env_float("LYRICS2PPTX_WEBUI_TAB_GRACE", 180.0, minimum=0.0)
+WEBUI_IDLE = _env_float("LYRICS2PPTX_WEBUI_IDLE", 1200.0, minimum=0.0)
+WEBUI_MAX_LIFETIME = _env_float("LYRICS2PPTX_WEBUI_MAX_LIFETIME", 10800.0, minimum=0.0)
+WEBUI_AUTOSHUTDOWN = _env_bool("LYRICS2PPTX_WEBUI_AUTOSHUTDOWN", True)
+# Rendezvous file for ``lyrics2pptx.vbs``: it holds the port and the instance id of
+# the live server so a second double-click reuses it. Plain ``key=value`` lines
+# because the launcher is VBScript and has no JSON parser. Written only while the
+# server runs (webapp.write_state / clear_state) — see ``webui_state_path``.
+_WEBUI_STATE_NAME = "webui.state"
+_WEBUI_STATE_EXPLICIT = bool(os.environ.get("LYRICS2PPTX_WEBUI_STATE_FILE", "").strip())
+WEBUI_STATE_FILE = _env_path("LYRICS2PPTX_WEBUI_STATE_FILE", OUTPUT_DIR / _WEBUI_STATE_NAME)
+
 LOG_LEVEL = _env_str("LYRICS2PPTX_LOG_LEVEL", "INFO").upper()
 LOG_LEVEL_OBJ = getattr(logging, LOG_LEVEL, None)
 if not isinstance(LOG_LEVEL_OBJ, int):
@@ -203,6 +235,11 @@ _KNOWN_ENV = frozenset(
         "LYRICS2PPTX_USER_AGENT",
         "LYRICS2PPTX_BIND_HOST",
         "LYRICS2PPTX_BIND_PORT",
+        "LYRICS2PPTX_WEBUI_TAB_GRACE",
+        "LYRICS2PPTX_WEBUI_IDLE",
+        "LYRICS2PPTX_WEBUI_MAX_LIFETIME",
+        "LYRICS2PPTX_WEBUI_AUTOSHUTDOWN",
+        "LYRICS2PPTX_WEBUI_STATE_FILE",
         "LYRICS2PPTX_LOG_LEVEL",
         "LYRICS2PPTX_KEEP_NOTES",
         "LYRICS2PPTX_DEDUPE_CHORUS",
@@ -216,6 +253,19 @@ _KNOWN_ENV = frozenset(
 # Characters that must never appear in an output file name.
 _UNSAFE_NAME_CHARS = '/\\:*?"<>|'
 _MAX_FILENAME_LEN = 100
+
+
+def webui_state_path() -> Path:
+    """Return the launcher rendezvous file (ADR-032).
+
+    ``WEBUI_STATE_FILE`` is frozen at import like every other value here, but the
+    output directory can be redirected *afterwards* (``LYRICS2PPTX_OUTPUT_DIR`` in
+    a test or a script). When the state file was not set explicitly, follow the
+    current ``OUTPUT_DIR`` so the two can never disagree.
+    """
+    if _WEBUI_STATE_EXPLICIT:
+        return WEBUI_STATE_FILE
+    return OUTPUT_DIR / _WEBUI_STATE_NAME
 
 
 def unknown_env_keys() -> tuple[str, ...]:

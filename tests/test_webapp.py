@@ -21,7 +21,7 @@ from urllib.parse import quote
 
 from pptx import Presentation
 
-from lyrics2pptx import config, pipeline
+from lyrics2pptx import config, pipeline, webapp
 from lyrics2pptx.webapp import build_server
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
@@ -29,6 +29,7 @@ TEMPLATE = Path(__file__).resolve().parents[1] / "template.pptx"
 PPTX_CONTENT_TYPE = (
     "application/vnd.openxmlformats-officedocument.presentationml.presentation"
 )
+TOKEN_HEADER = "X-Lyrics2Pptx-Token"
 
 
 def setUpModule() -> None:  # noqa: N802 - unittest hook
@@ -518,6 +519,288 @@ class SearchJobProgressTests(SearchJobHelpers, WebAppTestCase):
         self.assertEqual(snapshot["state"], "error")
         self.assertEqual(snapshot["error"]["code"], "INTERNAL")
         self.assertNotIn("boom", json.dumps(snapshot))
+
+
+class SessionRuleTests(unittest.TestCase):
+    """ADR-032: the three retirement rules and what defers them (pure logic)."""
+
+    def _session(self, **kwargs) -> webapp.Session:
+        base = dict(
+            token="t0ken",
+            tab_grace=0.0,
+            idle=0.0,
+            max_lifetime=0.0,
+            started=100.0,
+            last_activity=100.0,
+        )
+        base.update(kwargs)
+        return webapp.Session(**base)
+
+    def test_a_quiet_session_keeps_serving_until_the_idle_rule_fires(self) -> None:
+        session = self._session(idle=60.0)
+        self.assertIsNone(session.stop_reason(now=159.9))
+        self.assertEqual(session.stop_reason(now=160.0), "오랫동안 사용이 없어서")
+
+    def test_zero_disables_a_rule(self) -> None:
+        session = self._session(idle=0.0, tab_grace=0.0, max_lifetime=0.0)
+        session.closed_at = 0.0
+        self.assertIsNone(session.stop_reason(now=10_000.0))
+
+    def test_the_tab_grace_only_starts_when_the_page_says_it_is_closing(self) -> None:
+        session = self._session(tab_grace=180.0)
+        self.assertIsNone(session.stop_reason(now=10_000.0))
+        session.closed_at = 100.0
+        self.assertIsNone(session.stop_reason(now=279.9))
+        self.assertEqual(session.stop_reason(now=280.0), "탭을 닫아서")
+
+    def test_a_heartbeat_cancels_the_closing_decision(self) -> None:
+        session = self._session(tab_grace=1.0)
+        session.closed_at = 100.0
+        self.assertEqual(session.stop_reason(now=102.0), "탭을 닫아서")
+        session.heartbeat()
+        self.assertIsNone(session.stop_reason(now=102.0))
+
+    def test_keep_marks_use_but_a_plain_heartbeat_does_not(self) -> None:
+        session = self._session(idle=60.0, last_activity=0.0)
+        session.heartbeat()
+        self.assertEqual(session.last_activity, 0.0)
+        session.heartbeat(keep=True)
+        self.assertGreater(session.last_activity, 0.0)
+
+    def test_the_hard_ceiling_applies_even_to_an_open_tab(self) -> None:
+        session = self._session(max_lifetime=3600.0, started=0.0)
+        self.assertEqual(session.stop_reason(now=3600.0), "최대 가동 시간을 넘어서")
+
+    def test_work_in_progress_defers_every_rule(self) -> None:
+        session = self._session(idle=1.0, last_activity=0.0)
+        session.enter()
+        self.assertIsNone(session.stop_reason(now=999.0))
+        self.assertIsNone(session.stop_reason(now=999.0, jobs=1))
+        session.leave()
+        self.assertIsNotNone(session.stop_reason(now=999.0))
+
+    def test_an_explicit_request_is_remembered_and_waits_for_the_work(self) -> None:
+        session = self._session(idle=0.0)
+        session.request_stop("사용자 요청")
+        self.assertEqual(session.stop_reason(now=1.0), "사용자 요청")
+        session.enter()
+        self.assertIsNone(session.stop_reason(now=1.0))
+        session.leave()
+        self.assertEqual(session.stop_reason(now=1.0), "사용자 요청")
+
+    def test_snapshot_is_json_ready(self) -> None:
+        now = time.monotonic()
+        session = self._session(idle=60.0, started=now, last_activity=now)
+        payload = session.snapshot()
+        self.assertEqual(payload["instance"], session.instance)
+        self.assertEqual(payload["idle_seconds_left"], 60)
+        self.assertIsNone(payload["lifetime_seconds_left"])
+        self.assertFalse(payload["busy"])
+        self.assertFalse(payload["closing"])
+        self.assertTrue(payload["auto_shutdown"])
+        json.dumps(payload)
+
+
+class SessionEndpointTests(WebAppTestCase):
+    """ADR-032: heartbeat, closing beacon, and the guarded shutdown button."""
+
+    def test_ping_reports_the_session(self) -> None:
+        status, _, body = self.get("/api/ping")
+        self.assertEqual(status, 200)
+        payload = json.loads(body)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["instance"], self.server.session.instance)
+        self.assertTrue(payload["auto_shutdown"])
+        self.assertGreaterEqual(payload["idle_seconds_left"], 0)
+        self.assertFalse(payload["closing"])
+        self.assertEqual(payload["tab_grace_s"], self.server.session.tab_grace)
+        # 하트비트 자신은 "작업 진행 중"이 아니다(아니면 busy 가 항상 true 다).
+        self.assertFalse(payload["busy"])
+
+    def test_the_closing_beacon_starts_the_grace_and_a_ping_cancels_it(self) -> None:
+        # 페이지는 keepalive fetch 로 토큰을 헤더에 실어 보낸다.
+        status, _, body = self.request(
+            "POST",
+            "/api/ping?closing=1",
+            body=b"{}",
+            headers={
+                "Content-Type": "application/json",
+                TOKEN_HEADER: self.server.session.token,
+            },
+        )
+        self.assertEqual(status, 200)
+        self.assertTrue(json.loads(body)["closing"])
+        self.assertIsNotNone(self.server.session.closed_at)
+        self.get("/api/ping")
+        self.assertIsNone(self.server.session.closed_at)
+
+    def test_another_site_cannot_pretend_the_tab_is_closing(self) -> None:
+        status, _, _ = self.request(
+            "POST",
+            "/api/ping?closing=1",
+            body=b"{}",
+            headers={"Content-Type": "application/json", "Origin": "http://evil.example"},
+        )
+        self.assertEqual(status, 403)
+        self.assertIsNone(self.server.session.closed_at)
+
+    def test_a_heartbeat_never_counts_as_use(self) -> None:
+        session = self.server.session
+        session.last_activity -= 120.0
+        stale = session.last_activity
+        self.get("/api/ping")
+        self.assertEqual(session.last_activity, stale)
+        self.get("/api/ping?keep=1")
+        self.assertGreater(session.last_activity, stale)
+
+    def test_real_requests_count_as_use(self) -> None:
+        session = self.server.session
+        session.last_activity -= 120.0
+        stale = session.last_activity
+        self.get("/api/slides")
+        self.assertGreater(session.last_activity, stale)
+
+    def test_shutdown_without_the_token_is_refused(self) -> None:
+        status, _, body = self.post_json("/api/shutdown", {})
+        self.assertEqual(status, 403)
+        self.assertEqual(json.loads(body)["error"]["code"], "FORBIDDEN")
+        self.assertEqual(self.get("/api/ping")[0], 200)  # 서버는 그대로 살아 있다
+
+    def test_shutdown_from_another_site_is_refused(self) -> None:
+        status, _, _ = self.request(
+            "POST",
+            "/api/shutdown",
+            body=b"{}",
+            headers={
+                "Content-Type": "application/json",
+                TOKEN_HEADER: self.server.session.token,
+                "Origin": "http://evil.example",
+            },
+        )
+        self.assertEqual(status, 403)
+
+    def test_the_page_can_stop_the_server(self) -> None:
+        status, _, body = self.request(
+            "POST",
+            "/api/shutdown",
+            body=b"{}",
+            headers={
+                "Content-Type": "application/json",
+                TOKEN_HEADER: self.server.session.token,
+                "Origin": f"http://{self.host}:{self.port}",
+            },
+        )
+        self.assertEqual(status, 200)
+        self.assertTrue(json.loads(body)["ok"])
+        self.thread.join(timeout=10)
+        self.assertFalse(self.thread.is_alive(), "server did not stop after /api/shutdown")
+        self.assertEqual(self.server.session.reason, "사용자 요청")
+
+    def test_the_watchdog_retires_the_server_after_the_tab_closed(self) -> None:
+        session = self.server.session
+        session.tab_grace = 0.2
+        session.note_tab_closed()
+        self.assertIsNotNone(webapp.start_watchdog(self.server, interval=0.05))
+        self.thread.join(timeout=10)
+        self.assertFalse(self.thread.is_alive())
+        self.assertEqual(session.reason, "탭을 닫아서")
+
+    def test_the_watchdog_waits_for_work_in_progress(self) -> None:
+        session = self.server.session
+        session.tab_grace = 0.1
+        session.note_tab_closed()
+        session.enter()
+        webapp.start_watchdog(self.server, interval=0.05)
+        time.sleep(0.5)
+        self.assertTrue(self.thread.is_alive(), "server stopped while work was in flight")
+        session.leave()
+        self.thread.join(timeout=10)
+        self.assertFalse(self.thread.is_alive())
+
+    def test_the_watchdog_can_be_disabled(self) -> None:
+        self.server.session.auto_shutdown = False
+        self.assertIsNone(webapp.start_watchdog(self.server, interval=0.05))
+
+
+class SessionPageTests(WebAppTestCase):
+    """The shutdown token reaches the page it was served to, and nowhere else."""
+
+    def test_index_html_carries_the_token_and_no_placeholder(self) -> None:
+        status, _, body = self.get("/")
+        self.assertEqual(status, 200)
+        self.assertIn(self.server.session.token.encode("utf-8"), body)
+        self.assertNotIn(b"<!-- LYRICS2PPTX_SESSION -->", body)
+
+    def test_the_scripts_do_not_carry_the_token(self) -> None:
+        _, _, body = self.get("/static/app.js")
+        self.assertNotIn(self.server.session.token.encode("utf-8"), body)
+
+
+class StateFileTests(WebAppTestCase):
+    """ADR-032: the launcher finds a running server through ``output/webui.state``."""
+
+    def test_state_file_describes_the_running_server(self) -> None:
+        target = webapp.write_state(self.server)
+        self.assertIsNotNone(target)
+        self.assertEqual(target, config.webui_state_path())
+        lines = target.read_text(encoding="utf-8").split("\n")
+        self.assertIn(f"instance={self.server.session.instance}", lines)
+        self.assertIn(f"port={self.port}", lines)
+        self.assertIn(f"url=http://127.0.0.1:{self.port}/", lines)
+
+    def test_only_the_owning_instance_removes_the_file(self) -> None:
+        webapp.write_state(self.server)
+        webapp.clear_state("deadbeefdeadbeef")
+        self.assertTrue(config.webui_state_path().exists())
+        webapp.clear_state(self.server.session.instance)
+        self.assertFalse(config.webui_state_path().exists())
+
+    def test_a_missing_state_file_is_not_an_error(self) -> None:
+        webapp.clear_state(self.server.session.instance)
+
+
+class RevealTests(WebAppTestCase):
+    """``/api/reveal`` opens the built file — and nothing outside ``output/``."""
+
+    def _post_reveal(self, filename: str, *, token: bool = True, origin: str | None = None):
+        headers = {"Content-Type": "application/json"}
+        if token:
+            headers[TOKEN_HEADER] = self.server.session.token
+        if origin:
+            headers["Origin"] = origin
+        body = json.dumps({"filename": filename}, ensure_ascii=False).encode("utf-8")
+        return self.request("POST", "/api/reveal", body=body, headers=headers)
+
+    def test_a_built_file_is_revealed(self) -> None:
+        target = config.OUTPUT_DIR / "가사.pptx"
+        target.write_bytes(b"pptx")
+        with mock.patch.object(webapp, "_reveal_in_explorer") as reveal:
+            status, _, body = self._post_reveal("가사.pptx")
+        self.assertEqual(status, 200)
+        self.assertTrue(json.loads(body)["ok"])
+        self.assertEqual(Path(reveal.call_args.args[0]), target.resolve())
+
+    def test_a_name_outside_the_output_directory_is_sanitized_away(self) -> None:
+        # sanitize_filename 은 구분자를 지우므로 ../../template.pptx 는 output 안의
+        # 평범한 이름이 되고, 그 파일이 없으니 404 다(경로 탈출 자체가 불가능).
+        status, _, _ = self._post_reveal("../../template.pptx")
+        self.assertEqual(status, 404)
+        status, _, _ = self._post_reveal("..\\..\\template.pptx")
+        self.assertEqual(status, 404)
+
+    def test_a_missing_file_is_a_404(self) -> None:
+        status, _, _ = self._post_reveal("없는파일.pptx")
+        self.assertEqual(status, 404)
+
+    def test_only_the_served_page_may_open_a_folder(self) -> None:
+        target = config.OUTPUT_DIR / "가사.pptx"
+        target.write_bytes(b"pptx")
+        with mock.patch.object(webapp, "_reveal_in_explorer") as reveal:
+            self.assertEqual(self._post_reveal("가사.pptx", token=False)[0], 403)
+            self.assertEqual(
+                self._post_reveal("가사.pptx", origin="http://evil.example")[0], 403
+            )
+        reveal.assert_not_called()
 
 
 if __name__ == "__main__":

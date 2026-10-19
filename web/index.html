@@ -3,120 +3,220 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- LYRICS2PPTX_SESSION -->
   <title>가사 2줄 PPTX 생성기</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-  <header class="app-header">
-    <h1>가사 2줄 PPTX 생성기</h1>
-    <p class="subtitle">검색어로 가사를 모아 <code>template.pptx</code> 의 고른 배경 1장에 2줄씩 채웁니다.</p>
+  <div id="server-gone" class="server-gone" role="alert" hidden>
+    <strong>서버가 정리되었습니다.</strong>
+    <span>
+      창을 닫거나 한동안 사용하지 않으면 서버가 스스로 종료됩니다.
+      다시 시작하려면 <code>lyrics2pptx.vbs</code>(또는 가사 PPT 아이콘)를 실행하세요.
+    </span>
+  </div>
+
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a class="brand" href="/">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+               stroke-linecap="round" stroke-linejoin="round">
+            <rect x="2.6" y="4.6" width="18.8" height="14.8" rx="3.2"></rect>
+            <path d="M7.2 10.4h9.6M7.2 13.8h5.8"></path>
+          </svg>
+        </span>
+        <span class="brand-text">
+          <strong>가사 2줄</strong>
+          <span>PPTX 생성기</span>
+        </span>
+      </a>
+      <div class="topbar-actions">
+        <span id="server-state" class="status-chip" data-state="connecting" role="status"
+              aria-live="polite">
+          <span class="status-dot" aria-hidden="true"></span>
+          <span id="server-state-text">서버 확인 중…</span>
+        </span>
+        <button id="keep-button" type="button" class="btn btn-quiet btn-sm" hidden>계속 쓰기</button>
+        <button id="shutdown-button" type="button" class="btn btn-quiet btn-sm"
+                title="서버를 지금 종료합니다">종료</button>
+      </div>
+    </div>
   </header>
 
   <main class="app-main">
-    <section class="panel" aria-labelledby="input-heading">
-      <h2 id="input-heading">1. 가사 가져오기</h2>
-
-      <div class="mode-row" role="radiogroup" aria-label="입력 방식">
-        <label class="radio">
-          <input type="radio" name="mode" value="search" checked>
-          <span>검색해서 가져오기</span>
-        </label>
-        <label class="radio">
-          <input type="radio" name="mode" value="manual">
-          <span>직접 입력</span>
-        </label>
-      </div>
-
-      <div id="search-mode" class="mode-body">
-        <div class="field-row">
-          <label class="field-label" for="query">검색어</label>
-          <input id="query" type="text" placeholder="예: 생명샘  또는  아티스트 - 곡명" autocomplete="off">
-        </div>
-        <div class="field-row">
-          <label class="field-label" for="source">소스</label>
-          <select id="source">
-            <option value="auto" selected>auto (lrclib → 블로그 교차검증, 권장)</option>
-            <option value="lrclib">lrclib (공개 API, 한국 CCM 권장)</option>
-            <option value="blog">blog (블로그 검색 + 다수결 교차검증)</option>
-            <option value="lyrics_ovh">lyrics_ovh (공개 API)</option>
-          </select>
-          <button id="search-button" type="button" class="primary">검색</button>
-        </div>
-      </div>
-
-      <div id="manual-mode" class="mode-body" hidden>
-        <div class="field-row">
-          <label class="field-label" for="raw-text">가사 붙여넣기</label>
-          <textarea id="raw-text" rows="8" placeholder="가사를 붙여넣으세요. 빈 줄과 [Verse] 같은 표시는 자동으로 정리됩니다."></textarea>
-        </div>
-      </div>
+    <section class="hero">
+      <h1>곡 제목만 넣으면 <span class="hero-accent">2줄씩 나눈</span> PPTX가 나옵니다</h1>
+      <p class="hero-sub">
+        가사를 모아 <code>template.pptx</code> 의 고른 배경 한 장에 두 줄씩 채웁니다.
+        파일은 이 PC의 <code>output</code> 폴더에만 저장됩니다.
+      </p>
+      <ul class="hero-facts">
+        <li>계정 없음 · 로컬 실행</li>
+        <li>robots.txt 준수</li>
+        <li>창을 닫으면 자동 정리</li>
+      </ul>
     </section>
 
-    <section class="panel" aria-labelledby="slides-heading" id="slides-panel">
-      <h2 id="slides-heading">2. 배경 슬라이드 선택</h2>
-      <p id="slides-summary" class="summary">배경 슬라이드를 불러오는 중…</p>
-      <ul id="slides" class="slide-grid" role="radiogroup" aria-label="배경 슬라이드"></ul>
-    </section>
+    <div class="workspace">
+      <div class="column">
+        <section class="panel" aria-labelledby="input-heading">
+          <header class="panel-head">
+            <span class="step-badge" aria-hidden="true">1</span>
+            <div class="panel-titles">
+              <h2 id="input-heading">가사 가져오기</h2>
+              <p class="panel-hint">곡 제목으로 검색하거나, 가사를 직접 붙여넣으세요.</p>
+            </div>
+          </header>
 
-    <section class="panel" aria-labelledby="results-heading" id="results-panel" hidden>
-      <h2 id="results-heading">3. 곡 선택</h2>
-      <ul id="results" class="result-list" role="radiogroup" aria-label="검색 결과"></ul>
-    </section>
+          <div class="segmented" role="radiogroup" aria-label="입력 방식">
+            <label class="segment">
+              <input type="radio" name="mode" value="search" checked>
+              <span>검색해서 가져오기</span>
+            </label>
+            <label class="segment">
+              <input type="radio" name="mode" value="manual">
+              <span>직접 입력</span>
+            </label>
+          </div>
 
-    <section class="panel" aria-labelledby="preview-heading" id="preview-panel" hidden>
-      <h2 id="preview-heading">4. 미리보기</h2>
-      <p id="preview-summary" class="summary"></p>
-      <ol id="preview" class="preview-list" start="1"></ol>
-      <div class="pager">
-        <button id="prev-page" type="button">← 이전 3장</button>
-        <span id="page-label" class="page-label"></span>
-        <button id="next-page" type="button">다음 3장 →</button>
+          <div id="search-mode" class="mode-body">
+            <div class="field">
+              <label class="field-label" for="query">검색어</label>
+              <input id="query" type="text" placeholder="예: 생명샘  또는  아티스트 - 곡명"
+                     autocomplete="off">
+            </div>
+            <div class="field-row">
+              <div class="field field-grow">
+                <label class="field-label" for="source">소스</label>
+                <select id="source">
+                  <option value="auto" selected>auto — lrclib + 블로그 교차검증 (권장)</option>
+                  <option value="lrclib">lrclib — 공개 API, 한국 CCM 권장</option>
+                  <option value="blog">blog — 블로그 검색 + 다수결 교차검증</option>
+                  <option value="lyrics_ovh">lyrics_ovh — 공개 API</option>
+                </select>
+              </div>
+              <button id="search-button" type="button" class="btn btn-primary">가사 찾기</button>
+            </div>
+          </div>
+
+          <div id="manual-mode" class="mode-body" hidden>
+            <div class="field">
+              <label class="field-label" for="raw-text">가사 붙여넣기</label>
+              <textarea id="raw-text" rows="10"
+                        placeholder="가사를 붙여넣으세요."></textarea>
+              <p class="field-hint">
+                빈 줄과 <code>[Verse]</code> 같은 표시는 자동으로 정리됩니다.
+              </p>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel" aria-labelledby="results-heading" id="results-panel" hidden>
+          <header class="panel-head">
+            <span class="step-badge" aria-hidden="true">2</span>
+            <div class="panel-titles">
+              <h2 id="results-heading">곡 선택</h2>
+              <p class="panel-hint">후보마다 출처와 첫 줄이 다를 수 있습니다. 비교해서 고르세요.</p>
+            </div>
+          </header>
+          <ul id="results" class="result-list" role="radiogroup" aria-label="검색 결과"></ul>
+        </section>
+
+        <section class="panel" aria-labelledby="slides-heading" id="slides-panel">
+          <header class="panel-head">
+            <span class="step-badge" aria-hidden="true">3</span>
+            <div class="panel-titles">
+              <h2 id="slides-heading">배경 슬라이드 선택</h2>
+              <p class="panel-hint">고른 배경 한 장을 모든 슬라이드가 복제합니다.</p>
+            </div>
+          </header>
+          <p id="slides-summary" class="summary">배경 슬라이드를 불러오는 중…</p>
+          <ul id="slides" class="slide-grid" role="radiogroup" aria-label="배경 슬라이드"></ul>
+        </section>
       </div>
 
-      <div class="options">
-        <label class="checkbox">
-          <input id="dedupe-chorus" type="checkbox">
-          <span>후렴 등 반복 줄 줄이기</span>
-        </label>
-        <div class="field-row inline">
-          <label class="field-label" for="filename">파일명</label>
-          <input id="filename" type="text" value="가사.pptx">
-        </div>
+      <div class="column">
+        <section class="panel panel-preview" aria-labelledby="preview-heading" id="preview-panel">
+          <header class="panel-head">
+            <span class="step-badge" aria-hidden="true">4</span>
+            <div class="panel-titles">
+              <h2 id="preview-heading">미리보기</h2>
+              <p class="panel-hint">PPTX에 들어갈 그대로입니다 — 두 줄이 한 장입니다.</p>
+            </div>
+          </header>
+          <p id="preview-summary" class="summary"></p>
+          <ol id="preview" class="preview-list" start="1"></ol>
+          <p id="preview-empty" class="empty-state">
+            가사를 찾으면 여기에 슬라이드가 나옵니다.
+          </p>
+          <div class="pager">
+            <button id="prev-page" type="button" class="btn btn-quiet btn-sm">← 이전 3장</button>
+            <span id="page-label" class="page-label"></span>
+            <button id="next-page" type="button" class="btn btn-quiet btn-sm">다음 3장 →</button>
+          </div>
+        </section>
+
+        <section class="panel panel-save" aria-labelledby="save-heading">
+          <header class="panel-head">
+            <span class="step-badge" aria-hidden="true">5</span>
+            <div class="panel-titles">
+              <h2 id="save-heading">저장</h2>
+              <p class="panel-hint">파일 이름을 정하고 PPTX를 만듭니다.</p>
+            </div>
+          </header>
+
+          <div class="field">
+            <label class="field-label" for="filename">파일 이름</label>
+            <input id="filename" type="text" value="가사.pptx">
+          </div>
+
+          <label class="checkbox">
+            <input id="dedupe-chorus" type="checkbox">
+            <span>후렴 등 반복 줄 줄이기</span>
+          </label>
+
+          <button id="generate-button" type="button" class="btn btn-primary btn-block">
+            PPTX 생성
+          </button>
+
+          <div id="download-panel" class="download" hidden>
+            <p class="download-title">방금 만든 파일</p>
+            <p id="download-summary" class="download-name"></p>
+            <div class="download-actions">
+              <a id="download-link" class="btn btn-secondary" href="#" download>다시 내려받기</a>
+              <button id="reveal-button" type="button" class="btn btn-quiet">폴더 열기</button>
+            </div>
+          </div>
+        </section>
       </div>
-
-      <button id="generate-button" type="button" class="primary">PPTX 생성</button>
-    </section>
-
-    <section class="panel download" id="download-panel" hidden>
-      <h2>5. 다운로드</h2>
-      <a id="download-link" href="#" download>가사.pptx 내려받기</a>
-    </section>
+    </div>
 
     <p id="error" class="error" role="alert" hidden></p>
-
-    <div id="progress" class="progress" role="status" aria-live="polite" hidden>
-      <div class="progress-head">
-        <span id="progress-label" class="progress-label">가사를 찾는 중…</span>
-        <span id="progress-time" class="progress-time">0.0초</span>
-      </div>
-      <div
-        id="progress-track"
-        class="progress-track"
-        role="progressbar"
-        aria-label="진행률"
-        aria-valuemin="0"
-        aria-valuemax="100"
-      >
-        <div id="progress-fill" class="progress-fill"></div>
-      </div>
-      <ol id="progress-steps" class="progress-steps"></ol>
-    </div>
   </main>
 
   <footer class="app-footer">
     <p>가사 저작권은 권리자에게 있습니다. 개인 용도로만 사용하세요.</p>
     <p>자동 수집은 robots.txt 와 이용약관을 준수하는 소스만 기본 제공합니다.</p>
   </footer>
+
+  <div id="progress" class="progress" role="status" aria-live="polite" hidden>
+    <div class="progress-head">
+      <span id="progress-label" class="progress-label">가사를 찾는 중…</span>
+      <span id="progress-time" class="progress-time">0.0초</span>
+    </div>
+    <div
+      id="progress-track"
+      class="progress-track"
+      role="progressbar"
+      aria-label="진행률"
+      aria-valuemin="0"
+      aria-valuemax="100"
+    >
+      <div id="progress-fill" class="progress-fill"></div>
+    </div>
+    <ol id="progress-steps" class="progress-steps"></ol>
+  </div>
 
   <script src="/static/app.js"></script>
 </body>

@@ -45,10 +45,23 @@ Windows 한국어 콘솔(cp949)에서는 위 명령의 한글이 깨질 수 있�
 .\scripts\run.ps1                             # 스위치 없음 = -Doctor (읽기 전용)
 ```
 
-**가장 쉬운 실행(콘솔 없음):** `lyrics2pptx.vbs` 를 **더블클릭**한다. `wscript.exe` 가
-파이썬(`pythonw.exe`)을 찾아 `getport.py` 로 빈 포트를 고르고, 웹 UI를 **숨김 실행**한 뒤
-브라우저를 자동으로 연다. 8765 포트가 이미 점유돼 있어도 다른 포트를 쓴다. 기동에 실패하면
-로그 경로(`output\launch.log`)를 담은 대화상자가 뜬다(ADR-017).
+**가장 쉬운 실행 — 두 가지 중 하나를 더블클릭한다.**
+
+| 파일 | 동작 | 종료 방법 |
+| --- | --- | --- |
+| `webui.cmd` | **콘솔 창을 띄우고** `http://127.0.0.1:8765/` 로 웹 UI를 실행 + 브라우저 자동 오픈 | 그 창을 닫거나 **Ctrl+C** |
+| `lyrics2pptx.vbs` | 콘솔 **없이** 숨김 실행(빈 포트 자동 선택, 브라우저 자동 오픈) | `webui_stop.cmd` 더블클릭 |
+
+- **GUI를 테스트할 때는 `webui.cmd` 를 권장한다.** 서버 로그가 창에 보이고, 주소가 항상
+  `http://127.0.0.1:8765/` 로 고정되며, **창을 닫으면 서버가 내려간다.**
+- `lyrics2pptx.vbs` 는 ADR-017 의 "콘솔 없음" 요구용이다. 숨김 실행이라 **끄는 방법이 없어서**
+  `webui_stop.cmd`(아래)로 종료한다. 포트가 매번 달라질 수 있으므로 주소는
+  `output\launch.log` 또는 자동으로 열린 브라우저 탭에서 확인한다.
+- `webui_stop.cmd` 는 `8765` 포트 점유 프로세스와 `lyrics2pptx.webapp` 로 실행된 모든
+  프로세스를 종료한다(다른 파이썬 앱은 건드리지 않는다). 인자로 포트를 줄 수도 있다:
+  `webui_stop.cmd 9000`.
+- 직접 명령으로 멈추려면: `taskkill /f /im pythonw.exe`(숨김 인스턴스 전체) 또는
+  PowerShell `Get-NetTCPConnection -LocalPort 8765 | % { Stop-Process -Id $_.OwningProcess -Force }`.
 
 ---
 
@@ -98,8 +111,8 @@ Windows 한국어 콘솔(cp949)에서는 위 명령의 한글이 깨질 수 있�
 ## 3. 웹 UI 사용법
 
 ```powershell
-python -m lyrics2pptx.webapp        # 또는: .\scripts\run.ps1 -Web
-# 브라우저에서 http://127.0.0.1:8765 열기 (Ctrl+C 로 종료)
+python -m lyrics2pptx.webapp        # 또는: .\scripts\run.ps1 -Web   또는: webui.cmd
+# 브라우저에서 http://127.0.0.1:8765 열기 (Ctrl+C 로 종료 / webui_stop.cmd 로 종료)
 ```
 
 화면 흐름: **(1) 가사 가져오기**(검색 / 직접 입력) → **(2) 곡 선택** → **(3) 미리보기**
@@ -192,6 +205,8 @@ lyrics/
   scripts/run.ps1          Windows 러너
   getport.py               무콘솔 실행용 빈 포트 선택기 (ADR-017)
   lyrics2pptx.vbs          더블클릭 실행 진입점 (콘솔 없음, ASCII/no-BOM)
+  webui.cmd                더블클릭 실행 진입점 (콘솔 보임, 8765 고정, 창 닫기=종료)
+  webui_stop.cmd           웹 UI 종료 (포트 8765 + lyrics2pptx.webapp 프로세스)
   web/                     index.html · app.js · style.css (vanilla JS)
   output/                  생성된 .pptx 저장 위치 (gitignore; .gitkeep 만 추적)
   src/lyrics2pptx/

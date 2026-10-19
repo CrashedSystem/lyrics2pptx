@@ -1,3 +1,5 @@
+[![CI](https://github.com/CrashedSystem/lyrics2pptx/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/CrashedSystem/lyrics2pptx/actions/workflows/ci.yml)
+
 # lyrics2pptx — 가사 2줄 PPTX 생성기
 
 검색어로 가사를 모으거나 가사를 직접 붙여넣으면, `template.pptx` 의 배경 슬라이드를

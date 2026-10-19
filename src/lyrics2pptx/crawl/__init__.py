@@ -4,6 +4,10 @@ Maps a source name to an adapter instance. Only key-free, publicly documented
 sources ship enabled (docs/arch/06 §1). ``html_generic`` is intentionally left
 out of ``SOURCES``; enabling it is an explicit user edit (see that module's
 warning header).
+
+``auto`` (ADR-018) is the default: it falls back from lrclib to ``blog``, which
+searches the open web through a robots-allowed backend and cross-validates the
+pages it finds.
 """
 
 from __future__ import annotations
@@ -17,6 +21,9 @@ from .base import (
     SourceNotFoundError,
     SourceUnavailableError,
 )
+from .blog import BlogLyricsSource
+from .chain import ChainSource
+from .lrclib import LrclibSource
 from .lyrics_ovh import LyricsOvhSource
 
 __all__ = [
@@ -33,7 +40,10 @@ __all__ = [
 
 # Registry of enabled adapters. Add a module + one line here to extend.
 SOURCES: dict[str, type[Source]] = {
-    "lyrics_ovh": LyricsOvhSource,
+    "auto": ChainSource,  # ADR-018: lrclib first, then blog; default
+    "lrclib": LrclibSource,  # ADR-017: key-free, robots-allowed, Korean CCM present
+    "blog": BlogLyricsSource,  # ADR-018: web search + extraction + majority vote
+    "lyrics_ovh": LyricsOvhSource,  # kept for reference; robots.txt is a 404 -> now allowed
     # "html_generic": HtmlGenericSource,  # activate only after reading robots.txt / ToS
 }
 

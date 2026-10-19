@@ -10,8 +10,10 @@ L1  infrastructure : crawl/httputil.py
 L2  domain     : text/normalize.py, text/split.py,
                  pptx/template_reader.py, pptx/clone.py, pptx/fill.py,
                  pptx/writer_parts.py, pptx/writer_zip.py,
-                 crawl/lyrics_ovh.py, crawl/html_generic.py
-L3  composition: crawl/__init__.py, pptx/builder.py, pptx/writer.py, pipeline.py
+                 crawl/lyrics_ovh.py, crawl/lrclib.py, crawl/html_generic.py,
+                 crawl/blog.py, crawl/crosscheck.py, crawl/websearch/*.py
+L3  composition: crawl/__init__.py, crawl/chain.py, crawl/websearch/__init__.py,
+                 pptx/builder.py, pptx/writer.py, pipeline.py
 L4  entrypoint : cli.py, webapp.py
 ```
 
@@ -27,6 +29,11 @@ L4 는 아무도 import 하지 않는다. L4 → L4 금지 (`cli` ↔ `webapp` �
 | `crawl/base.py` | L0 | `RawSong`, `Source` 프로토콜, `SourceError` 계층 | 네트워크 접근 |
 | `crawl/httputil.py` | L1 | robots 확인, UA, 지연, 재시도/백오프, fixture 훅 | 사이트별 파싱, 텍스트 정규화 |
 | `crawl/<site>.py` | L2 | 특정 소스 → `RawSong` 매핑 | 규칙 우회(직접 `urllib` 호출 금지), 파일 저장, 정규화 |
+| `crawl/blog.py` | L2 | 검색 결과 페이지에서 사이트 특정 셀렉터 없이 가사 런 추출 → 페이지별 전사본 | 검색 색인 자체(백엔드에 위임), `text` 의존(규칙 P4) |
+| `crawl/crosscheck.py` | L2 | 여러 전사본의 줄별 다수결(`Transcript`/`Consensus`), 순서 무관 최선매칭 | 네트워크, 파일 I/O, `text` 의존 |
+| `crawl/websearch/ddg.py` | L2 | DuckDuckGo HTML/lite 결과 파싱(색인 전용, 스니펫은 가사 아님) | 가사 판독(결과 페이지에서 읽음), robots 우회 |
+| `crawl/websearch/__init__.py` | L3 | 검색 백엔드 레지스트리(`ddg` 만), `get_backend` | 사이트별 수집 |
+| `crawl/chain.py` | L3 | `auto` 폴백 체인(lrclib → blog) + 오류 우선순위 | 개별 소스 내부 로직 |
 | `crawl/__init__.py` | L3 | `SOURCES` 레지스트리, `get_source(name)` | 파싱 로직 |
 | `text/normalize.py` | L2 | `str` → `list[str]` (N1~N10) | 슬라이드 페어링, pptx 접근 |
 | `text/split.py` | L2 | `list[str]` → `list[LinePair]` | pptx 접근, 파일 I/O |
@@ -47,10 +54,19 @@ L4 는 아무도 import 하지 않는다. L4 → L4 금지 (`cli` ↔ `webapp` �
 lyrics2pptx/__init__.py       → errors.py, pipeline.py   (지연 재수출: PEP 562 __getattr__)
 cli.py                        → pipeline.py, config.py, errors.py
 webapp.py                     → pipeline.py, config.py, errors.py
-pipeline.py                   → crawl/__init__.py, text/normalize.py, text/split.py,
+pipeline.py                   → crawl/__init__.py, crawl/blog.py, crawl/crosscheck.py,
+                                text/normalize.py, text/split.py,
                                 pptx/__init__.py, pptx/builder.py, pptx/template_reader.py,
                                 config.py, errors.py
-crawl/__init__.py             → crawl/base.py, crawl/lyrics_ovh.py, errors.py
+crawl/__init__.py             → crawl/base.py, crawl/blog.py, crawl/chain.py,
+                                crawl/lyrics_ovh.py, crawl/lrclib.py, errors.py
+crawl/chain.py                → crawl/base.py, config.py
+crawl/blog.py                 → crawl/base.py, crawl/httputil.py, crawl/crosscheck.py,
+                                crawl/websearch/__init__.py, config.py, errors.py
+crawl/crosscheck.py           → (표준 라이브러리만)
+crawl/websearch/__init__.py   → crawl/websearch/base.py, crawl/websearch/ddg.py, config.py, errors.py
+crawl/websearch/ddg.py        → crawl/websearch/base.py, crawl/httputil.py, crawl/base.py, errors.py
+crawl/lrclib.py               → crawl/base.py, crawl/httputil.py, config.py
 crawl/lyrics_ovh.py           → crawl/base.py, crawl/httputil.py, config.py
 crawl/html_generic.py         → crawl/base.py, crawl/httputil.py
 crawl/httputil.py             → crawl/base.py, errors.py, config.py
@@ -103,10 +119,10 @@ config.py                     → errors.py
 | P1 | `text/* → pptx/*` | 텍스트 축은 문서 형식을 모른다 (교체 가능성 유지) | `test_imports.py` |
 | P2 | `text/* → crawl/*` | 문자열 처리는 수집 출처와 무관하다 | `test_imports.py` |
 | P3 | `pptx/* → crawl/*` | 문서 생성은 가사 출처를 모른다 | `test_imports.py` |
-| P4 | `crawl/* → text/*`, `crawl/* → pptx/*` | 수집 축은 소비자를 모른다 | `test_imports.py` |
+| P4 | `crawl/* → text/*`, `crawl/* → pptx/*` | 수집 축은 소비자를 모른다 (교차검증은 `crawl/crosscheck` 로 자체 보유) | `test_imports.py` |
 | P5 | `clone|fill|template_reader → builder` | 조립은 단방향이다 (하위가 상위를 부르면 순환) | `test_imports.py` |
 | P6 | 임의 모듈 → `cli`/`webapp` | 진입점은 leaf 다 | `test_imports.py` |
-| P7 | 어댑터가 `urllib` 직접 사용 | robots/지연/UA 우회 차단 | 코드리뷰 + `test_httputil.py` |
+| P7 | 어댑터가 `urllib` 직접 사용 | robots/지연/UA 우회 차단 (URL 판단은 `httputil.host_of`/`is_http_url` 로 위임) | 코드리뷰 + `test_httputil.py` |
 | P8 | 순환 의존(어떤 형태든) | 조립/초기화 순서 붕괴 | `test_imports.py` (DFS 사이클 검출) |
 | P9 | `config`/`errors` 외 모듈의 `os.environ` 접근 | 설정 출처 단일화 | `test_imports.py` (grep 기반) |
 
@@ -126,9 +142,18 @@ graph TD
   PIPE --> TREAD["L2 pptx/template_reader.py"]
   REG --> CBASE["L0 crawl/base.py"]
   REG --> OVH["L2 crawl/lyrics_ovh.py"]
+  REG --> LRCLIB["L2 crawl/lrclib.py"]
   REG --> HTML["L2 crawl/html_generic.py"]
+  REG --> CHAIN["L3 crawl/chain.py"]
+  REG --> BLOG["L2 crawl/blog.py"]
+  BLOG --> XCHK["L2 crawl/crosscheck.py"]
+  BLOG --> WS["L3 crawl/websearch/__init__.py"]
+  WS --> DDG["L2 crawl/websearch/ddg.py"]
   OVH --> HTTP["L1 crawl/httputil.py"]
+  LRCLIB --> HTTP
   HTML --> HTTP
+  BLOG --> HTTP
+  DDG --> HTTP
   HTTP --> CBASE
   BUILD --> WRITER["L3 pptx/writer.py"]
   WRITER --> WPARTS["L2 pptx/writer_parts.py"]

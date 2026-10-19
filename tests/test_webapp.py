@@ -152,7 +152,7 @@ class SearchEndpointTests(WebAppTestCase):
         self.assertEqual(len(payload["results"]), 1)
         hit = payload["results"][0]
         self.assertEqual(hit["title"], "생명샘")
-        self.assertEqual(hit["source_name"], "lyrics_ovh")
+        self.assertEqual(hit["source_name"], "lrclib")
         self.assertLessEqual(len(hit["preview_lines"]), 3)
 
     def test_empty_query_is_a_bad_request(self) -> None:
@@ -308,11 +308,13 @@ class SlidesEndpointTests(WebAppTestCase):
         self.assertEqual(status, 400)
         self.assertEqual(json.loads(body)["error"]["code"], "BAD_REQUEST")
 
-    def test_thumbnail_for_a_slide_without_an_image_is_404(self) -> None:
-        # Slide 11 has a solid-colour background (no image relationship).
-        status, _, body = self.get("/api/slides/11/thumbnail")
-        self.assertEqual(status, 404)
-        self.assertEqual(json.loads(body)["error"]["code"], "NOT_FOUND")
+    def test_thumbnail_for_a_picture_filled_full_bleed_shape(self) -> None:
+        # Slide 11 paints its background with a full-bleed autoshape whose
+        # spPr carries a blipFill, rather than a <p:bg> or <p:pic>.
+        status, headers, body = self.get("/api/slides/11/thumbnail")
+        self.assertEqual(status, 200)
+        self.assertTrue(headers["content-type"].startswith("image/"))
+        self.assertTrue(body)
 
     def test_malformed_slides_path_is_404(self) -> None:
         for path in ("/api/slides/19", "/api/slides/19/other"):

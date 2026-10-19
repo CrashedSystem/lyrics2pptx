@@ -37,10 +37,13 @@ __all__ = [
     "UserFacingError",
     "SearchHit",
     "PreviewResult",
+    "CrossCheckLine",
+    "CrossCheckResult",
     "run",
     "preview",
     "search_hits",
     "search_songs",
+    "cross_check",
     "resolve_slide_index",
     "describe_error",
     "resolve_output_path",
@@ -87,6 +90,31 @@ class PreviewResult:
     removed_marker_count: int
 
 
+@dataclass(frozen=True, slots=True)
+class CrossCheckLine:
+    """One voted lyric position and the evidence behind it."""
+
+    text: str
+    support: int
+    total: int
+    variants: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class CrossCheckResult:
+    """Consensus lyrics plus per-line evidence, without building a file.
+
+    ``lines`` is exactly what ``--source blog --index 0`` would build; the
+    ``detail`` entries let a human confirm or override the majority spelling
+    first (ADR-018: majority vote, then user confirmation).
+    """
+
+    query: str
+    lines: tuple[str, ...]
+    detail: tuple[CrossCheckLine, ...]
+    source_count: int
+
+
 # Exception type → (code, http_status, recoverable). Order matters: the first
 # isinstance() match wins, and no entry here is a subclass of another.
 _MESSAGE_TABLE: dict[type[Lyrics2PptxError], tuple[str, int, bool]] = {
@@ -102,7 +130,7 @@ _MESSAGE_TABLE: dict[type[Lyrics2PptxError], tuple[str, int, bool]] = {
 # Canonical Korean wording for each code. ``{detail}`` is filled with str(exc)
 # for the codes that benefit from the concrete cause/path.
 _MESSAGE_TEMPLATE: dict[str, str] = {
-    "SOURCE_NOT_FOUND": "검색 결과가 없습니다. 다른 검색어를 시도하거나 가사를 직접 붙여넣으세요.",
+    "SOURCE_NOT_FOUND": "검색 결과가 없습니다. '가수' 또는 '가수 - 곡명'으로 다시 시도하거나, 가사를 직접 붙여넣으세요.",
     "SOURCE_BLOCKED": "이 소스는 자동 수집이 차단되었습니다. 직접 입력을 사용하세요.",
     "SOURCE_UNAVAILABLE": "일시적으로 수집에 실패했습니다. 잠시 후 재시도하세요.",
     "EMPTY_LYRICS": "가사에서 유효한 줄을 찾지 못했습니다.",
@@ -198,6 +226,36 @@ def search_hits(
             )
         )
     return hits
+
+
+def cross_check(query: str, *, max_pages: int | None = None) -> CrossCheckResult:
+    """Collect web transcriptions and vote them line by line.
+
+    The first ``--source blog`` candidate is exactly ``lines``; this function
+    exposes the evidence behind it so the user can confirm or override the
+    majority spelling before building (ADR-018).
+
+    Raises:
+        ConfigError: the query is empty.
+        SourceError: no page yielded lyrics, or the search backend failed.
+    """
+    from .crawl.blog import collect_and_vote
+
+    consensus, _pages = collect_and_vote(query, max_pages=max_pages)
+    return CrossCheckResult(
+        query=query.strip(),
+        lines=consensus.lines,
+        detail=tuple(
+            CrossCheckLine(
+                text=entry.text,
+                support=entry.support,
+                total=entry.total,
+                variants=entry.variants,
+            )
+            for entry in consensus.entries
+        ),
+        source_count=consensus.source_count,
+    )
 
 
 def _clean_lines(lines: list[str]) -> list[str]:

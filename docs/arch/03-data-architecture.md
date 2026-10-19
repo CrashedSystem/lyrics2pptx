@@ -130,6 +130,26 @@ class SearchHit:
     artist: str | None
     source_name: str
     preview_lines: tuple[str, ...]   # 정규화 후 앞 3줄
+
+# ---- L2/L4: crawl/crosscheck.py · pipeline.py (ADR-018) --------------------
+@dataclass(frozen=True, slots=True)
+class Transcript:               # crawl/crosscheck.py — 페이지 1장의 전사본
+    source: str                 # 호스트 등 짧은 라벨
+    lines: tuple[str, ...]
+    url: str | None = None
+
+@dataclass(frozen=True, slots=True)
+class Consensus:                # 줄별 다수결 결과
+    entries: tuple[LineConsensus, ...]
+    source_count: int           # 투표에 참여한(중복 제거 후) 전사본 수
+    # .lines = tuple(entry.text …), .disagreements = 합의가 갈린 항목만
+
+@dataclass(frozen=True, slots=True)
+class CrossCheckLine:           # pipeline.py — 사용자에게 보여줄 근거 1줄
+    text: str                   # 합의(다수결) 표기
+    support: int                # 이 표기를 쓴 페이지 수
+    total: int                  # 전체 페이지 수
+    variants: tuple[str, ...]   # 다른 표기(오타/띄어쓰기) — 조용히 버리지 않는다
 ```
 
 ### dataclass 설계 규칙

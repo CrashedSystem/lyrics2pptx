@@ -101,8 +101,9 @@ Content-Length: <n>
 | `--query` | 검색어 | — | `--input-file`/`--lines-file` 과 배타 |
 | `--input-file` | 텍스트 파일(UTF-8) | — | 존재 검사 → `ConfigError` |
 | `-o/--output` | 출력 경로 | `output/<filename>` | 디렉터리 자동 생성 |
-| `--source` | 소스 이름 | `config.DEFAULT_SOURCE` | `get_source()` 가 `ConfigError` |
-| `--index` | 검색 결과 선택 | `0` | 범위 밖 → `SourceNotFoundError` |
+| `--source` | 소스 이름(`auto`·`blog`·`lrclib`·`lyrics_ovh`) | `config.DEFAULT_SOURCE`=`auto` | `get_source()` 가 `ConfigError` |
+| `--index` | 검색 결과 선택 (`blog` 는 0=합의, 1~=개별 페이지) | `0` | 범위 밖 → `SourceNotFoundError` |
+| `--cross-check` | 블로그 수집·교차검증 결과만 출력(빌드 안 함) | off | `--query` 필요 |
 | `--dedupe-chorus` | 후렴 중복 제거 | off | D5 |
 | `--skip-slide` | 배경 풀 제외(1-based, 반복) | 없음 | 범위 검증 → `ConfigError` |
 | `--keep-notes` | 노트 복제 | off | AD-08 |
@@ -156,7 +157,9 @@ def resolve_output_path(output_path: Path | None, *, title: str | None) -> Path:
 | `LYRICS2PPTX_WEB_DIR` | path | `<repo>/web` | `config`, `webapp` |
 | `LYRICS2PPTX_FIXTURE_DIR` | path | (없음) | `config`, `httputil` |
 | `LYRICS2PPTX_DEFAULT_FILENAME` | str | `가사.pptx` | `config`, `pipeline` |
-| `LYRICS2PPTX_SOURCE` | str | `lyrics_ovh` | `config`, `pipeline` |
+| `LYRICS2PPTX_SOURCE` | str | `auto` | `config`, `pipeline` |
+| `LYRICS2PPTX_SEARCH_BACKEND` | str | `ddg` | `config`, `websearch` |
+| `LYRICS2PPTX_BLOG_MAX_PAGES` | int(1–10) | `5` | `config`, `blog` |
 | `LYRICS2PPTX_HTTP_DELAY` | float(초) | `2.0` | `httputil` |
 | `LYRICS2PPTX_HTTP_TIMEOUT` | float(초) | `10` | `httputil` |
 | `LYRICS2PPTX_MAX_RETRIES` | int | `3` | `httputil` |

@@ -5,7 +5,7 @@
 서버·클라우드·계정이 필요 없고, 실행은 Windows 로컬 프로세스 하나와 로컬 웹서버(127.0.0.1)뿐이다.
 템플릿은 **읽기 전용 입력**으로만 열리며 절대 수정되지 않는다.
 
-> 상태: `src/`+`web/` 구현 완료. 테스트 `293 tests OK`. 진입점 `python -m lyrics2pptx.cli` / `python -m lyrics2pptx.webapp`.
+> 상태: `src/`+`web/` 구현 완료. 테스트 `405 tests OK`. 진입점 `python -m lyrics2pptx.cli` / `python -m lyrics2pptx.webapp` / 더블클릭 `lyrics2pptx.vbs`. 기본 수집 소스는 `auto`(lrclib → 블로그 교차검증, ADR-018).
 
 ---
 
@@ -21,8 +21,11 @@ python -m pip install -e .
 # 2) 실행 전 자가진단 (파일을 만들지 않음)
 python -m lyrics2pptx.cli --doctor
 
-# 3a) 검색어로 생성 (기본 소스 = lyrics.ovh, 네트워크 필요)
+# 3a) 검색어로 생성 (기본 소스 = auto: lrclib → 블로그 교차검증, 네트워크 필요)
 python -m lyrics2pptx.cli --query "아티스트 - 곡명"
+
+# 3a-1) 합의 가사를 만들지 않고 교차검증 결과만 확인 (빌드 안 함)
+python -m lyrics2pptx.cli --query "곡명" --cross-check
 
 # 3b) 가사를 직접 붙여넣어 생성 (오프라인, 한국어에 권장)
 python -m lyrics2pptx.cli --input-file "가사.txt"
@@ -42,6 +45,11 @@ Windows 한국어 콘솔(cp949)에서는 위 명령의 한글이 깨질 수 있�
 .\scripts\run.ps1                             # 스위치 없음 = -Doctor (읽기 전용)
 ```
 
+**가장 쉬운 실행(콘솔 없음):** `lyrics2pptx.vbs` 를 **더블클릭**한다. `wscript.exe` 가
+파이썬(`pythonw.exe`)을 찾아 `getport.py` 로 빈 포트를 고르고, 웹 UI를 **숨김 실행**한 뒤
+브라우저를 자동으로 연다. 8765 포트가 이미 점유돼 있어도 다른 포트를 쓴다. 기동에 실패하면
+로그 경로(`output\launch.log`)를 담은 대화상자가 뜬다(ADR-017).
+
 ---
 
 ## 2. CLI 사용법
@@ -54,8 +62,9 @@ Windows 한국어 콘솔(cp949)에서는 위 명령의 한글이 깨질 수 있�
 | `--input-file PATH` | 직접 입력 텍스트(UTF-8). 정규화(N1~N10) 적용 |
 | `--lines-file PATH` | 이미 정리된 줄 파일(한 줄 = 한 문장). 정규화 생략 |
 | `-o`, `--output PATH` | 출력 경로 (기본 `output\<제목>.pptx`) |
-| `--source NAME` | 수집 소스 이름 (기본 `lyrics_ovh`) |
-| `--index N` | 검색 결과 중 선택할 번호 (기본 `0`) |
+| `--source NAME` | 수집 소스 이름: `auto`(기본)·`blog`·`lrclib`·`lyrics_ovh` |
+| `--index N` | 검색 결과 중 선택할 번호 (기본 `0`; `blog` 는 `0`=합의 가사, `1`~=개별 페이지) |
+| `--cross-check` | `--query` 로 블로그를 수집·교차검증해 **합의 줄 + 지지수 + 다른 표기**만 출력 (빌드 안 함) |
 | `--dedupe-chorus` | 후렴 등 3회 이상 반복 줄을 2회까지만 유지 |
 | `--skip-slide N` | 배경 풀에서 제외할 템플릿 슬라이드 번호(1-based, 반복 가능) |
 | `--keep-notes` | 템플릿 노트(noteSlide)도 복제 (기본: 복제 안 함) |
@@ -79,8 +88,10 @@ Windows 한국어 콘솔(cp949)에서는 위 명령의 한글이 깨질 수 있�
                                                  # exit 0 (오프라인 fixture 모드)
 ```
 
-> 실 네트워크 `--query` 는 이 문서 작성 환경(오프라인)에서 **미검증**이다. 위 fixture 모드와
-> 동일한 코드 경로를 타며, 저장 응답으로만 대체된다.
+> 실 네트워크 `--query` 는 `lrclib.net` 으로 **검증됐다**: `어노인팅` → 후보 반환(API total 20),
+> `손잡고 함께 가세` → 1건, `생명샘` → 0건(미수록). 부하 시 `503` 은 재시도 레이어가 흡수한다.
+> lrclib 에 없는 곡은 기본 소스 `auto` 가 **블로그 검색 + 다수결 교차검증**으로 폴백한다(ADR-018):
+> `지금은 엘리야 때처럼` → 4페이지 채택/합의 24줄/불일치 15줄(오타 `에스길`→`에스겔` 자동 교정, 변형 보고).
 
 ---
 
@@ -93,7 +104,9 @@ python -m lyrics2pptx.webapp        # 또는: .\scripts\run.ps1 -Web
 
 화면 흐름: **(1) 가사 가져오기**(검색 / 직접 입력) → **(2) 곡 선택** → **(3) 미리보기**
 → **(4) 다운로드**. 직접 입력 모드의 미리보기는 서버(`POST /api/preview`)가 계산한 값을
-그대로 보여 주므로 **미리보기와 실제 파일이 어긋나지 않는다**.
+그대로 보여 주므로 **미리보기와 실제 파일이 어긋나지 않는다**. 검색 모드의 기본 소스는
+`auto`(lrclib → 블로그 교차검증)이며 드롭다운에서 `blog`·`lrclib`·`lyrics_ovh` 로 바꿀 수 있다.
+`blog` 의 결과 `0`번은 **합의 가사**, 그 뒤는 개별 페이지 전사본이다(ADR-018).
 
 HTTP 라우트(로컬 전용):
 
@@ -150,7 +163,9 @@ venv → `py -3.12` → `python` 순으로 인터프리터를 찾는다. 미설�
 | `LYRICS2PPTX_WEB_DIR` | path | `<repo>\web` | config, webapp |
 | `LYRICS2PPTX_FIXTURE_DIR` | path | (없음) | config, httputil (오프라인 모드) |
 | `LYRICS2PPTX_DEFAULT_FILENAME` | str | `가사.pptx` | config, pipeline |
-| `LYRICS2PPTX_SOURCE` | str | `lyrics_ovh` | config, pipeline |
+| `LYRICS2PPTX_SOURCE` | str | `auto` | config, pipeline |
+| `LYRICS2PPTX_SEARCH_BACKEND` | str | `ddg` | config, crawl/websearch |
+| `LYRICS2PPTX_BLOG_MAX_PAGES` | int | `5` | config, crawl/blog |
 | `LYRICS2PPTX_HTTP_DELAY` | float(초) | `2.0` | httputil |
 | `LYRICS2PPTX_HTTP_TIMEOUT` | float(초) | `10` | httputil |
 | `LYRICS2PPTX_MAX_RETRIES` | int | `3` | httputil |
@@ -175,16 +190,19 @@ lyrics/
   pyproject.toml           패키지 메타 (src 레이아웃, pip install -e .)
   requirements.txt         런타임 핀: python-pptx==1.0.2
   scripts/run.ps1          Windows 러너
+  getport.py               무콘솔 실행용 빈 포트 선택기 (ADR-017)
+  lyrics2pptx.vbs          더블클릭 실행 진입점 (콘솔 없음, ASCII/no-BOM)
   web/                     index.html · app.js · style.css (vanilla JS)
   output/                  생성된 .pptx 저장 위치 (gitignore; .gitkeep 만 추적)
   src/lyrics2pptx/
     cli.py, webapp.py      L4 진입점
     pipeline.py            L3 조립 + describe_error() 단일 오류 매핑
     config.py, errors.py   L0 설정/예외
-    crawl/                 수집 축 (base, httputil, lyrics_ovh, html_generic)
+    crawl/                 수집 축 (base, httputil, lrclib, lyrics_ovh, html_generic,
+                           blog, crosscheck, chain, websearch/{base,ddg})
     text/                  정규화/2줄 분할 (normalize, split)
     pptx/                  템플릿 읽기·복제·채우기·쓰기 (writer*, builder, clone, fill…)
-  tests/                   293 tests (표준 unittest)
+  tests/                   405 tests (표준 unittest)
   docs/plan/ docs/arch/     설계 문서 · docs/guide/ 사용가이드 · docs/adr/ 결정 기록
 ```
 
@@ -196,8 +214,8 @@ lyrics/
 python -m unittest discover -s tests -t .
 ```
 
-검증된 결과(실제 실행): `Ran 293 tests … OK`, exit 0. 네트워크 실호출 0회이며 collect 단계는
-fixture/mock 으로 격리된다. `.\scripts\run.ps1 -Test` 도 동일하게 293 tests / OK / exit 0.
+검증된 결과(실제 실행): `Ran 405 tests … OK`, exit 0. 네트워크 실호출 0회이며 collect 단계는
+fixture/mock 으로 격리된다. `.\scripts\run.ps1 -Test` 도 동일하게 405 tests / OK / exit 0.
 
 정적 게이트:
 
@@ -215,7 +233,10 @@ fixture/mock 으로 격리된다. `.\scripts\run.ps1 -Test` 도 동일하게 293
 - **개인적·비상업적 용도 한정**(개인 감상, 발표 자료 초안 등).
 - 가사 권리는 **권리자(작사가·작곡가·음원 권리자)에게 있다.** 이 도구는 권리를 양도하지 않는다.
 - 생성물을 **배포·공연·상업적 이용·재배포**하면 저작권 침해가 될 수 있다.
-- 자동 수집은 **robots.txt 와 이용약관을 준수하는 소스만 기본 제공**한다(`lyrics_ovh` — 키 없는 공개 API).
+- 자동 수집은 **robots.txt 와 이용약관을 준수하는 소스만 기본 제공**한다(`lrclib.net` — 키 없는 공개 API,
+  그리고 `auto` 체인의 웹 검색은 robots 가 허용하는 DuckDuckGo HTML/lite 만 사용 — ADR-018).
+  `lrclib.net` 의 ToS 문서는 확인하지 못했으므로 **개인 용도**로만 쓴다(ADR-017).
+  블로그 필사 가사는 **저작권 상태가 확인되지 않으므로** 개인 용도로만 쓴다.
   `crawl/html_generic.py` 는 **기본 비활성**이며, 활성화하려면 대상 사이트의 robots.txt 와
   이용약관을 직접 확인해야 한다. 법률 자문이 아니며 책임은 사용자에게 있다.
 - 저작권이 걱정되면 자동 수집 대신 **직접 입력**(`--input-file`, 웹 UI "직접 입력")으로
@@ -225,9 +246,20 @@ fixture/mock 으로 격리된다. `.\scripts\run.ps1 -Test` 도 동일하게 293
 
 ## 9. 알려진 한계
 
-- **기본 검색 소스의 한국어 커버리지가 낮다.** `lyrics_ovh`(키 없는 공개 API)는 K-pop/한국 가요
-  데이터가 부실하다. 한국어 가사는 **직접 입력 경로를 권장**한다(`--input-file` / 웹 UI 직접 입력).
-  다른 소스는 `crawl/<site>.py` 추가 + `SOURCES` 한 줄로 확장한다(단, robots.txt/약관 확인 필수).
+- **기본 검색 소스(`lrclib.net`)도 커버리지가 100%는 아니다.** literal substring 검색이라
+  아티스트로 찾으면 강하지만(어노인팅·마커스워십·손경민·예람워십 실측), 「생명샘」처럼 DB에 없는
+  곡은 찾지 못한다. 그럴 때는 **직접 입력**을 쓴다(`--input-file` / 웹 UI 직접 입력). 부하 시
+  `503` 이 잦지만 재시도 레이어(1·2·4초)가 흡수한다. 다른 소스는 `crawl/<site>.py` 추가 +
+  `SOURCES` 한 줄로 확장한다(단, robots.txt/약관 확인 필수).
+- **블로그 폴백(`blog`)은 만능이 아니다.** 검색 결과 품질에 의존하고, 가사를 **이미지로만** 올린
+  페이지·JS 렌더링 페이지는 수집하지 못한다. 다수결도 항상 정답은 아니므로(2-2 동률·후렴 합치기)
+  `--cross-check` 로 지지수와 **다른 표기**를 확인하고 필요하면 개별 페이지(`--index 1`~)를 고른다.
+  웹 수집은 페이지당 `HTTP_DELAY`(기본 2초)를 지켜 느리다(`BLOG_MAX_PAGES` 기본 5).
+- 자동 수집은 robots.txt 를 **우회하지 않는다**. `robots.txt` 404/410 은 "규칙 없음 → 허용"
+  (RFC 9309), 그 외 실패는 차단이다. 그래서 `search.naver.com`·`openapi.naver.com`(둘 다 `Disallow: /`)
+  경로는 **의도적으로 미탑재**다.
+- `lyrics_ovh` 는 **모듈만 남아 있고 기본값이 아니다.** 이 소스의 `robots.txt` 는 404 이며,
+  fail-closed 정책 때문에 어떤 검색어로도 요청이 차단된다(도달률 0%).
 - **배경은 템플릿에 실재하는 슬라이드만** 쓴다. `template.pptx` 가 20장이면 배경 풀도 20장이며
   `pool[k % 20]` 으로 순환한다. 템플릿이 없으면 빌드는 실패한다(스킵 아님).
 - **산출물 크기 ≈ 템플릿 크기**(약 37 MB). 원본 슬라이드 파트/미디어를 재사용하고 남겨 두기

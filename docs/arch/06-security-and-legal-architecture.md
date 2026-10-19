@@ -58,13 +58,15 @@ def _respect_delay(url: str) -> None:
 | 설계 결정 | 값 | 근거 |
 | --- | --- | --- |
 | robots 조회 실패 시 | **차단**(`SourceBlockedError`) | 보수적 실패. 자동 수집의 합법성 우선 |
+| robots.txt 404/410 | **허용** | RFC 9309 §2.3.1.3: 규칙 파일 부재 = 규칙 없음 (ADR-018) |
 | robots 캐시 | 호스트별 10분 TTL | 반복 조회 방지 |
 | UA | 상수 1곳. 브라우저 위장 금지 | 계획서 03 |
 | 지연 | 호스트별 직전 요청 기준 간격 확보(고정 sleep 이 아님) | 요청 수와 무관하게 예절 보장 |
 | 재시도 | 429/5xx/타임아웃만, 최대 3, `1s→2s→4s` | 계획서 03 §실패 분류 |
 | 404/403 | **재시도 없이** `SourceBlockedError` | 재시도 무의미 |
+| 검색 색인 | robots 허용 엔진만(`ddg` html/lite). `naver`(openapi·search) 는 `Disallow: /` 라 **미탑재** | ADR-018 |
 
-**강제의 핵심**: 어댑터(`lyrics_ovh`, `html_generic`)는 `urllib` 을 직접 import 하지 않는다(P7).
+**강제의 핵심**: 어댑터(`lyrics_ovh`, `lrclib`, `blog`, `html_generic`)와 검색 백엔드(`ddg`)는 `urllib` 을 직접 import 하지 않는다(P7).
 따라서 robots/UA/지연을 "잊는" 코드 경로가 존재할 수 없다. 리뷰가 아니라 **구조**로 강제된다.
 
 ## 3. 신뢰 경계(Trust Boundary) 다이어그램
@@ -129,7 +131,10 @@ graph TD
 | 테스트 | 단언 |
 | --- | --- |
 | `test_httputil.py::test_disallow_verdict_blocks_the_request` | `Disallow` → `SourceBlockedError`, 요청 미발생 |
-| `test_httputil.py::test_unreachable_robots_fails_closed` | robots 조회 실패 → 보수적 차단 |
+| `test_httputil.py::test_unreachable_robots_fails_closed` | robots 조회 실패(403/500/URLError) → 보수적 차단 |
+| `test_httputil.py::test_absent_robots_404_allows_access` | robots.txt 404 → 허용(RFC 9309, ADR-018) |
+| `test_httputil.py::test_gone_robots_410_allows_access` | robots.txt 410 → 허용 |
+| `test_httputil.py::test_robots_403_stays_blocked` | robots 403 → 차단 |
 | `test_httputil.py::test_user_agent_is_sent_and_never_spoofs_a_browser` | 캡처된 요청 헤더에 `DEFAULT_UA` 포함(브라우저 위장 금지) |
 | `test_httputil.py::test_minimum_delay_is_enforced_between_consecutive_requests` | 연속 2회 호출 간 경과 ≥ `HTTP_DELAY` |
 | `test_imports.py::test_p7_adapters_do_not_touch_urllib_directly` | `crawl` 축에서 `urllib` import 가 `httputil.py` 1곳뿐 |

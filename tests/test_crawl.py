@@ -18,6 +18,8 @@ from unittest import mock
 from lyrics2pptx import config
 from lyrics2pptx.crawl import SOURCES, available_sources, get_source
 from lyrics2pptx.crawl.base import RawSong, Source, SourceNotFoundError, SourceUnavailableError
+from lyrics2pptx.crawl.blog import BlogLyricsSource
+from lyrics2pptx.crawl.chain import ChainSource
 from lyrics2pptx.crawl.html_generic import HtmlGenericSource
 from lyrics2pptx.crawl.lyrics_ovh import BASE_URL, LyricsOvhSource
 from lyrics2pptx.errors import ConfigError
@@ -27,7 +29,15 @@ FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
 class RegistryTests(unittest.TestCase):
     def test_available_sources_is_sorted_and_contains_the_reference_adapter(self) -> None:
-        self.assertEqual(available_sources(), ("lyrics_ovh",))
+        self.assertEqual(available_sources(), ("auto", "blog", "lrclib", "lyrics_ovh"))
+
+    def test_auto_and_blog_are_registered(self) -> None:
+        blog = get_source("blog")
+        self.assertIsInstance(blog, BlogLyricsSource)
+        self.assertEqual(blog.name, "blog")
+        chain = get_source("auto")
+        self.assertIsInstance(chain, ChainSource)
+        self.assertEqual(chain.name, "auto")
 
     def test_html_generic_is_intentionally_disabled(self) -> None:
         self.assertNotIn("html_generic", SOURCES)

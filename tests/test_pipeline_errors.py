@@ -46,7 +46,7 @@ class DescribeErrorTests(unittest.TestCase):
 
     def test_canonical_messages_are_stable(self) -> None:
         expected = {
-            "SOURCE_NOT_FOUND": "검색 결과가 없습니다. 다른 검색어를 시도하거나 가사를 직접 붙여넣으세요.",
+            "SOURCE_NOT_FOUND": "검색 결과가 없습니다. '가수' 또는 '가수 - 곡명'으로 다시 시도하거나, 가사를 직접 붙여넣으세요.",
             "SOURCE_BLOCKED": "이 소스는 자동 수집이 차단되었습니다. 직접 입력을 사용하세요.",
             "SOURCE_UNAVAILABLE": "일시적으로 수집에 실패했습니다. 잠시 후 재시도하세요.",
             "EMPTY_LYRICS": "가사에서 유효한 줄을 찾지 못했습니다.",

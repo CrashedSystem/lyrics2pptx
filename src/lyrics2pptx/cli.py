@@ -94,6 +94,14 @@ def build_parser() -> argparse.ArgumentParser:
         dest="as_json",
         help="빌드하지 않고 수집 결과만 JSON 으로 stdout 에 출력합니다",
     )
+    parser.add_argument(
+        "--cross-check",
+        action="store_true",
+        help=(
+            "여러 공개 페이지의 가사를 교차검증해 합의 가사와 다른 표기를 "
+            "출력합니다 (--query 필요, 빌드하지 않음)"
+        ),
+    )
     parser.add_argument("--log-level", help=f"로그 수준 (기본: {config.LOG_LEVEL})")
     parser.add_argument(
         "--doctor",
@@ -173,6 +181,34 @@ def _emit_collection_json(args: argparse.Namespace) -> int:
     return 0
 
 
+def _emit_cross_check(args: argparse.Namespace) -> int:
+    """Print the majority-voted lyrics and every disagreement (no build)."""
+    if not args.query:
+        raise ConfigError("--cross-check 는 --query 와 함께 사용해야 합니다")
+    result = pipeline.cross_check(args.query)
+    if args.as_json:
+        payload = {
+            "query": result.query,
+            "source_count": result.source_count,
+            "count": len(result.lines),
+            "lines": list(result.lines),
+            "detail": [asdict(item) for item in result.detail],
+        }
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 0
+
+    print(f"# {result.query} — {result.source_count}곳 교차검증, {len(result.lines)}줄")
+    disputed = 0
+    for number, item in enumerate(result.detail, 1):
+        note = ""
+        if item.variants:
+            disputed += 1
+            note = f"   ← 다른 표기: {' / '.join(item.variants)}"
+        print(f"{number:3d}. {item.text}{note}")
+    print(f"# 불일치 {disputed}줄 / 전체 {len(result.detail)}줄")
+    return 0
+
+
 def _doctor(args: argparse.Namespace) -> int:
     report = pipeline.doctor_report()
     try:
@@ -235,6 +271,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.doctor:
             return _doctor(args)
         raw_text, lines = _resolve_inputs(args)
+        if args.cross_check:
+            return _emit_cross_check(args)
         if args.as_json:
             return _emit_collection_json(args)
 

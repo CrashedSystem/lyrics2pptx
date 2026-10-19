@@ -6,7 +6,8 @@ background before generating. This module exposes, for the whole template:
 * per-slide metadata (1-based index, whether it exposes ``제목 1``, and the URL
   of its background thumbnail);
 * the raw background image bytes of a slide, whatever form the background takes
-  (``<p:bg>`` blipFill ``r:embed`` *or* a full-bleed ``<p:pic>``).
+  (a ``<p:bg>`` blipFill, a full-bleed ``<p:pic>``, or a full-bleed autoshape
+  whose ``<p:spPr>`` carries a picture ``<a:blipFill>``).
 
 The template is a 37 MB resource, so the parsed catalogue (metadata + image
 blobs) is computed once and cached on ``(path, size, mtime)``; requests never
@@ -80,11 +81,37 @@ def _thumbnail_url(index: int) -> str:
     return f"/api/slides/{index}/thumbnail"
 
 
-def _first_embed_reference(sld_element) -> str | None:
+def _is_full_bleed(sp_element, slide_width: int, slide_height: int) -> bool:
+    """Whether an autoshape covers the whole slide (``0,0`` at the slide size)."""
+    sp_pr = sp_element.find(qn("p:spPr"))
+    if sp_pr is None:
+        return False
+    transform = sp_pr.find(qn("a:xfrm"))
+    if transform is None:
+        return False
+    offset = transform.find(qn("a:off"))
+    extent = transform.find(qn("a:ext"))
+    if offset is None or extent is None:
+        return False
+    try:
+        return (
+            int(offset.get("x")) == 0
+            and int(offset.get("y")) == 0
+            and int(extent.get("cx")) == slide_width
+            and int(extent.get("cy")) == slide_height
+        )
+    except (TypeError, ValueError):
+        return False
+
+
+def _first_embed_reference(
+    sld_element, slide_width: int, slide_height: int
+) -> str | None:
     """Return the ``r:embed`` of the slide background, or ``None``.
 
-    Handles both background styles found in the template: a ``<p:bg>`` blipFill
-    (shared/theme-like background) and a full-bleed ``<p:pic>`` shape.
+    Handles every background form found in the template: a ``<p:bg>`` blipFill
+    (shared/theme-like background), a full-bleed ``<p:pic>``, and a full-bleed
+    autoshape filled with a picture (template slide 11).
     """
     background = sld_element.find(f"{qn('p:cSld')}/{qn('p:bg')}")
     if background is not None:
@@ -98,11 +125,23 @@ def _first_embed_reference(sld_element) -> str | None:
             reference = blip.get(qn("r:embed"))
             if reference:
                 return reference
+
+    for shape in sld_element.iter(qn("p:sp")):
+        if not _is_full_bleed(shape, slide_width, slide_height):
+            continue
+        sp_pr = shape.find(qn("p:spPr"))
+        blip_fill = sp_pr.find(qn("a:blipFill")) if sp_pr is not None else None
+        if blip_fill is None:
+            continue
+        for blip in blip_fill.iter(qn("a:blip")):
+            reference = blip.get(qn("r:embed"))
+            if reference:
+                return reference
     return None
 
 
-def _thumbnail_for(slide) -> SlideThumbnail | None:
-    reference = _first_embed_reference(slide._element)
+def _thumbnail_for(slide, slide_width: int, slide_height: int) -> SlideThumbnail | None:
+    reference = _first_embed_reference(slide._element, slide_width, slide_height)
     if reference is None:
         return None
     rel = slide.part.rels.get(reference)
@@ -123,6 +162,8 @@ def _build_catalog(template_path: Path) -> _SlideCatalog:
         raise ConfigError(f"템플릿을 열 수 없습니다: {template_path}") from exc
 
     slides = list(presentation.slides)
+    slide_width = presentation.slide_width
+    slide_height = presentation.slide_height
     meta: list[SlideMeta] = []
     thumbnails: dict[int, SlideThumbnail] = {}
     for offset, slide in enumerate(slides):
@@ -134,7 +175,7 @@ def _build_catalog(template_path: Path) -> _SlideCatalog:
                 thumbnail_url=_thumbnail_url(index),
             )
         )
-        thumbnail = _thumbnail_for(slide)
+        thumbnail = _thumbnail_for(slide, slide_width, slide_height)
         if thumbnail is not None:
             thumbnails[index] = thumbnail
 

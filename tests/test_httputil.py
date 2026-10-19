@@ -94,6 +94,32 @@ class RobotsTests(PolitenessBase):
             with self.assertRaises(SourceBlockedError):
                 httputil.get_text("https://unreachable.example.com/page")
 
+    def test_absent_robots_404_allows_access(self) -> None:
+        # RFC 9309 §2.3.1.3: a 404 means there is no robots file, so access is
+        # allowed. This is what makes sites without robots.txt usable.
+        with mock.patch.object(
+            httputil, "_open_and_read", side_effect=_http_error("https://missing.example.com/robots.txt", 404)
+        ):
+            self.assertTrue(httputil.allowed_by_robots("https://missing.example.com/page"))
+
+    def test_gone_robots_410_allows_access(self) -> None:
+        with mock.patch.object(
+            httputil, "_open_and_read", side_effect=_http_error("https://gone.example.com/robots.txt", 410)
+        ):
+            self.assertTrue(httputil.allowed_by_robots("https://gone.example.com/page"))
+
+    def test_robots_403_stays_blocked(self) -> None:
+        with mock.patch.object(
+            httputil, "_open_and_read", side_effect=_http_error("https://forbidden.example.com/robots.txt", 403)
+        ):
+            self.assertFalse(httputil.allowed_by_robots("https://forbidden.example.com/page"))
+
+    def test_robots_500_stays_blocked(self) -> None:
+        with mock.patch.object(
+            httputil, "_open_and_read", side_effect=_http_error("https://broken.example.com/robots.txt", 500)
+        ):
+            self.assertFalse(httputil.allowed_by_robots("https://broken.example.com/page"))
+
     def test_robots_verdict_is_cached_so_robots_txt_is_fetched_once(self) -> None:
         calls: list[str] = []
 

@@ -8,7 +8,9 @@ Enforced behaviour (docs/arch/06 §2, docs/plan/03 §HTTP 예절 레이어):
 
 * robots.txt is consulted before any request; a ``Disallow`` verdict or an
   unreachable robots.txt blocks the request with ``SourceBlockedError``
-  (fail closed).
+  (fail closed). A ``404``/``410`` for ``robots.txt`` means "no robots file"
+  and therefore **allows** access (RFC 9309 §2.3.1.3); any other HTTP error
+  (401/403/5xx) stays blocked.
 * ``User-Agent`` is assembled in exactly one place and never spoofs a browser.
 * A host-level minimum delay is kept between consecutive requests.
 * Redirects are followed manually, one hop at a time, and the robots verdict
@@ -54,7 +56,10 @@ __all__ = [
     "MAX_RESPONSE_BYTES",
     "allowed_by_robots",
     "get_json",
+    "get_json_list",
     "get_text",
+    "host_of",
+    "is_http_url",
     "sleep_between",
     "reset_http_state",
 ]
@@ -116,9 +121,20 @@ def _log_target(url: str) -> tuple[str, str]:
     return parsed.netloc, path
 
 
+def _encode_url(url: str) -> str:
+    """Percent-encode non-ASCII characters so ``urllib`` can build a request.
+
+    Korean blog permalinks (``https://thinkjesus.kr/지금은-엘리야-때처럼/``) reach
+    us as IRIs; ``urllib`` encodes headers as ASCII and raises
+    ``UnicodeEncodeError`` unless the path is escaped first. Existing ``%XX``
+    escapes are preserved (``%`` is in ``safe``), so this is idempotent.
+    """
+    return quote(url, safe=":/?#[]@!$&'()*+,;=%")
+
+
 def _build_request(url: str, *, ua: str) -> Request:
     return Request(
-        url,
+        _encode_url(url),
         headers={
             "User-Agent": ua,
             "Accept": "application/json, text/plain, */*",
@@ -154,7 +170,7 @@ class _GuardedRedirectHandler(HTTPRedirectHandler):
                 f"리다이렉트가 최대 허용 횟수({MAX_REDIRECTS})를 초과했습니다: {newurl}"
             )
         _guard(newurl, ua=self._ua)
-        return super().redirect_request(req, fp, code, msg, headers, newurl)
+        return super().redirect_request(req, fp, code, msg, headers, _encode_url(newurl))
 
 
 def _open_and_read(url: str, *, ua: str, timeout: float) -> bytes:
@@ -172,8 +188,10 @@ def _open_and_read(url: str, *, ua: str, timeout: float) -> bytes:
 def allowed_by_robots(url: str, *, ua: str = DEFAULT_UA) -> bool:
     """Return True when ``robots.txt`` permits fetching ``url`` with ``ua``.
 
-    An unreachable or unparsable robots.txt is treated as a denial (fail
-    closed). Verdicts are cached per host for ``config.ROBOTS_CACHE_TTL``.
+    A ``404``/``410`` response means "no robots file" and therefore allows
+    access (RFC 9309 §2.3.1.3); every other unreachable or unparsable
+    robots.txt is treated as a denial (fail closed). Verdicts are cached per
+    host for ``config.ROBOTS_CACHE_TTL``.
     """
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https") or not parsed.netloc:
@@ -189,7 +207,17 @@ def allowed_by_robots(url: str, *, ua: str = DEFAULT_UA) -> bool:
         blob = _open_and_read(robots_url, ua=ua, timeout=config.HTTP_TIMEOUT)
         text = blob.decode("utf-8", errors="replace")
         allowed = _robots_allows(text, url, ua)
-    except (HTTPError, URLError, OSError, SourceUnavailableError, ValueError) as exc:
+    except HTTPError as exc:
+        # RFC 9309 §2.3.1.3: an unavailable robots file (404/410) means there
+        # are no rules, so access is allowed. Every other HTTP status (401,
+        # 403, 5xx) is not evidence of permission and stays fail-closed.
+        if int(exc.code) in (404, 410):
+            log.info("robots absent host=%s status=%s -> allowed", host, exc.code)
+            allowed = True
+        else:
+            log.warning("robots unreachable host=%s status=%s -> blocked", host, exc.code)
+            allowed = False
+    except (URLError, OSError, SourceUnavailableError, ValueError) as exc:
         log.warning("robots unreachable host=%s reason=%s -> blocked", host, type(exc).__name__)
         allowed = False
 
@@ -293,6 +321,35 @@ def get_json(
     return payload
 
 
+def get_json_list(
+    url: str,
+    *,
+    ua: str = DEFAULT_UA,
+    timeout: float | None = None,
+    fixture: str | None = None,
+) -> list:
+    """Return the decoded JSON **array** body of ``url`` (or a saved fixture).
+
+    ``get_json`` rejects non-object payloads, so an array-returning end-point
+    (lrclib ``/api/search``, ADR-017) needs its own accessor. The politeness
+    gate, retry policy, and offline fixture hook are identical to ``get_json``;
+    only the final ``isinstance`` check differs.
+    """
+    effective_timeout = config.HTTP_TIMEOUT if timeout is None else timeout
+    if config.FIXTURE_DIR is not None:
+        raw = _read_fixture(url, fixture, parse="json")
+    else:
+        _guard(url, ua=ua)
+        raw = _request_with_retry(url, ua=ua, timeout=effective_timeout, parse="json")
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise SourceUnavailableError("응답을 해석하지 못했습니다 (JSON 아님)") from exc
+    if not isinstance(payload, list):
+        raise SourceUnavailableError("응답 형식이 예상과 다릅니다 (배열 아님)")
+    return payload
+
+
 def get_text(
     url: str,
     *,
@@ -316,3 +373,21 @@ def sleep_between(seconds: float | None = None) -> None:
 def urlquote(component: str) -> str:
     """Percent-encode a single URL path component (helper for adapters)."""
     return quote(component, safe="")
+
+
+def host_of(url: str) -> str:
+    """Return the lower-cased host of ``url`` without a leading ``www.``.
+
+    Adapters must not parse URLs themselves (rule P7 forbids importing
+    ``urllib`` outside this module), so the small bits of URL reasoning they
+    need — the display host of a page, and whether a search hit is a fetchable
+    ``http(s)`` URL — are exposed here.
+    """
+    host = urlparse(url).netloc.lower()
+    return host[4:] if host.startswith("www.") else host
+
+
+def is_http_url(url: str) -> bool:
+    """True when ``url`` is an absolute ``http(s)`` URL that can be fetched."""
+    parsed = urlparse(url)
+    return parsed.scheme in ("http", "https") and bool(parsed.netloc)

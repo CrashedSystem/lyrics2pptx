@@ -32,7 +32,11 @@ class DefaultsTests(unittest.TestCase):
 
     def test_scalar_defaults_match_the_environment_manifest(self) -> None:
         self.assertEqual(config.DEFAULT_FILENAME, "가사.pptx")
-        self.assertEqual(config.DEFAULT_SOURCE, "lyrics_ovh")
+        # ADR-018: the default is the fallback chain, not a single adapter.
+        self.assertEqual(config.DEFAULT_SOURCE, "auto")
+        self.assertEqual(config.CHAIN_MEMBERS, ("lrclib", "blog"))
+        self.assertEqual(config.SEARCH_BACKEND, "ddg")
+        self.assertEqual(config.BLOG_MAX_PAGES, 5)
         self.assertEqual(config.TITLE_SHAPE_NAME, "제목 1")
         self.assertEqual(config.BIND_HOST, "127.0.0.1")
         self.assertEqual(config.BIND_PORT, 8765)

@@ -125,7 +125,9 @@ LOG_LEVEL       = _env_str("LYRICS2PPTX_LOG_LEVEL", "INFO").upper()
 
 | 상수 | 값 | 사용처 |
 | --- | --- | --- |
-| `DEFAULT_SOURCE` | `"lyrics_ovh"` | `pipeline`, `cli`, `webapp` |
+| `DEFAULT_SOURCE` | `"auto"` (lrclib → blog 체인, ADR-018) | `pipeline`, `cli`, `webapp` |
+| `SEARCH_BACKEND` | `"ddg"` (robots 허용 색인만) | `websearch` |
+| `BLOG_MAX_PAGES` | `5` | `blog` |
 | `DEFAULT_FILENAME` | `"가사.pptx"` | `pipeline` |
 | `DEFAULT_UA` | `"lyrics2pptx/0.1 (+local single-user tool)"` | `httputil` |
 | `TITLE_SHAPE_NAME` | `"제목 1"` | `fill`, `template_reader` |

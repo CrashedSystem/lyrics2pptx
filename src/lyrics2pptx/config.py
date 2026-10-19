@@ -26,6 +26,9 @@ __all__ = [
     "FIXTURE_DIR",
     "DEFAULT_FILENAME",
     "DEFAULT_SOURCE",
+    "CHAIN_MEMBERS",
+    "SEARCH_BACKEND",
+    "BLOG_MAX_PAGES",
     "HTTP_DELAY",
     "HTTP_TIMEOUT",
     "MAX_RETRIES",
@@ -137,7 +140,14 @@ FIXTURE_DIR = _env_path("LYRICS2PPTX_FIXTURE_DIR", ROOT / "tests" / "fixtures") 
 ) else None
 
 DEFAULT_FILENAME = _env_str("LYRICS2PPTX_DEFAULT_FILENAME", "가사.pptx")
-DEFAULT_SOURCE = _env_str("LYRICS2PPTX_SOURCE", "lyrics_ovh")
+# ADR-018: ``auto`` = fallback chain. lrclib answers fast and structurally when
+# it has the song; only a miss falls through to the web-search collector.
+DEFAULT_SOURCE = _env_str("LYRICS2PPTX_SOURCE", "auto")
+CHAIN_MEMBERS = ("lrclib", "blog")
+SEARCH_BACKEND = _env_str_choice("LYRICS2PPTX_SEARCH_BACKEND", "ddg", ("ddg",))
+# Upper bound on pages fetched (and votes cast) per web search. Each fetch is
+# subject to HTTP_DELAY, so this must stay small.
+BLOG_MAX_PAGES = _env_int("LYRICS2PPTX_BLOG_MAX_PAGES", 5, minimum=1, maximum=10)
 
 HTTP_DELAY = _env_float("LYRICS2PPTX_HTTP_DELAY", 2.0, minimum=0.0)
 HTTP_TIMEOUT = _env_float("LYRICS2PPTX_HTTP_TIMEOUT", 10.0, minimum=0.001)
@@ -176,6 +186,8 @@ _KNOWN_ENV = frozenset(
         "LYRICS2PPTX_FIXTURE_DIR",
         "LYRICS2PPTX_DEFAULT_FILENAME",
         "LYRICS2PPTX_SOURCE",
+        "LYRICS2PPTX_SEARCH_BACKEND",
+        "LYRICS2PPTX_BLOG_MAX_PAGES",
         "LYRICS2PPTX_HTTP_DELAY",
         "LYRICS2PPTX_HTTP_TIMEOUT",
         "LYRICS2PPTX_MAX_RETRIES",

@@ -35,6 +35,9 @@
         <div class="field-row">
           <label class="field-label" for="source">소스</label>
           <select id="source">
+            <option value="auto" selected>auto (lrclib → 블로그 교차검증, 권장)</option>
+            <option value="lrclib">lrclib (공개 API, 한국 CCM 권장)</option>
+            <option value="blog">blog (블로그 검색 + 다수결 교차검증)</option>
             <option value="lyrics_ovh">lyrics_ovh (공개 API)</option>
           </select>
           <button id="search-button" type="button" class="primary">검색</button>

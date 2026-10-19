@@ -17,6 +17,12 @@ and pick another one when the majority is wrong.
 
 Multiple pages that carry byte-identical text count as **one** vote, not many:
 mirrors are common and would otherwise outvote independent transcriptions.
+
+ADR-020 adds the rule that a *page* must look like a transcription before its
+lines may vote at all. A query that is also a Bible verse ("정금같이 나오리라",
+욥 23:10) otherwise collects scripture pages — bible.com's verse page and a blog
+posting Job 23:1-9 — and those pages carried the vote because the real
+transcription was a 353-line catalogue page that the similarity filter dropped.
 """
 
 from __future__ import annotations
@@ -68,7 +74,11 @@ _NOISE_RE = re.compile(
     r"|공감|댓글|스크랩|신고|이웃추가|구독|공유하기|게시글\s*관리|URL\s*복사|다운로드|카테고리"
     r"|로그인|회원가입|티스토리|네이버\s*블로그|글쓴이|작성자|조회수|추천"
     r"|저작권|Copyright|ⓒ|©|Powered|RSS|이전글|다음글|맨\s*위로|반응형"
-    r"|더\s*보기|블로그\s*내\s*검색|악보|영상\s*보기|내려받기)",
+    r"|더\s*보기|블로그\s*내\s*검색|악보|영상\s*보기|내려받기"
+    # Title lines of other songs ("… (Feat. 홍길동)") and scripture-page chrome
+    # ("모든 번역본 비교 : 욥기 23:10"). Both were on real pages that reached the
+    # vote (ADR-020).
+    r"|\b(?:feat|ft)\.|모든\s*번역본|묵상\s*계획|무료\s*묵상|가사\s*더보기|노래\s*듣기)",
     re.IGNORECASE,
 )
 # Korean prose ends with these; lyrics almost never do.
@@ -85,6 +95,72 @@ _SEPARATOR_SHAPE_RE = re.compile(
     r"^\s*[\[\(（]?[^\]\)）]{0,12}[\]\)）]?\s*$",
     re.IGNORECASE,
 )
+
+# Furniture a lyric line never *equals*. Keys are ``line_key``-normalised
+# (space-free, alphanumeric) and matched exactly, so a lyric that merely contains
+# "검색" survives. These lines are dropped **without** ending the run: a login
+# form or a share button between two verses must not split the song. Measured on
+# gasazip.com, where eleven such lines sat directly above the lyrics and were
+# being transcribed as lyrics (ADR-020).
+_CHROME_LINES = frozenset(
+    {
+        "한국어", "공유", "보관", "검색", "가사검색", "가사등록", "싱크가사등록",
+        "ai해석", "가사카드", "동영상새로고침", "회원아이디필수", "비밀번호필수",
+        "url복사", "더보기", "맨위로", "자동로그인",
+    }
+)
+
+# Headings that announce the lyric block is *over* and a catalogue of other songs
+# begins. Unlike chrome these end the run: everything after them is a list of
+# other titles, and letting it join the run is how an allklyrics.com candidate
+# grew to 353 lines of other songs (ADR-020).
+_TAIL_HEADINGS = frozenset(
+    {
+        "관련가사", "관련곡", "다른가사", "인기가사", "최신가사", "추천가사",
+        "이가수듣기", "가사더보기", "이곡과비슷한", "같은가수의다른곡",
+    }
+)
+
+#: A transcription, not a lyric *site*. A longer densest run is a catalogue page.
+_MAX_LYRIC_LINES = 80
+
+#: A Bible chapter renders as "1 욥이 대답하여 이르되" line after line; lyrics are
+#: not numbered. Verse numbers are also kept *inside* the line (unlike the bare
+#: "1." markers between stanzas), so counting them identifies a passage page.
+_VERSE_LINE_RE = re.compile(r"^\d{1,3}[.)]?\s+\S")
+_MIN_VERSE_LINES = 3
+
+#: Sync-format sites print a line twice, so the slide would read
+#: "내가 정금같이 나오리라 내가 정금같이 나오리라". Only a *phrase* (four or more
+#: tokens) is collapsed, which leaves a short repeat like "사랑해 사랑해" alone.
+_DOUBLED_MIN_TOKENS = 4
+
+
+def _collapse_duplicate_phrase(line: str) -> str:
+    """Collapse ``A A`` (sync-format duplication) into ``A``; else return ``line``."""
+    tokens = line.split()
+    if len(tokens) < _DOUBLED_MIN_TOKENS or len(tokens) % 2:
+        return line
+    half = len(tokens) // 2
+    if tokens[:half] == tokens[half:]:
+        return " ".join(tokens[:half])
+    return line
+
+
+def _collapse_duplicated_block(lines: list[str]) -> list[str]:
+    """Drop a block the page prints twice in a row (layout duplication, not song).
+
+    gasazip.com renders the same six lines above and below a "영상 보기" button, so
+    every slide appeared twice in the deck. Only a *whole-run* duplication is
+    removed, which leaves a real two-verse song alone (its halves differ) and
+    only loses a repeat whose words are still present (ADR-020).
+    """
+    while len(lines) >= 2 and len(lines) % 2 == 0:
+        half = len(lines) // 2
+        if lines[:half] != lines[half:]:
+            break
+        lines = lines[:half]
+    return lines
 
 
 def _to_lines(page: str) -> list[tuple[str, bool]]:
@@ -148,13 +224,26 @@ def extract_lyrics(page: str, *, min_lines: int = 6) -> tuple[str, ...]:
 
     No site-specific selector is used, so the same code works for tistory,
     Naver blogs and ordinary HTML pages. Returns ``()`` when no run of at least
-    ``min_lines`` lines exists (e.g. the lyrics are published as an image).
+    ``min_lines`` lines exists (e.g. the lyrics are published as an image) or
+    when the page is not a transcription at all: a Bible passage (numbered
+    verse lines), a catalogue of other songs (an implausibly long run), or page
+    furniture that happens to be short Korean text (ADR-020).
     """
     best: list[str] = []
     current: list[str] = []
     for line, is_link in _to_lines(page):
+        key = line_key(line)
+        if key in _CHROME_LINES:
+            # Furniture: not a lyric, but not a break either — a menu between
+            # two verses must not cut the song in half.
+            continue
+        if key in _TAIL_HEADINGS:
+            if len(current) > len(best):
+                best = current
+            current = []
+            continue
         if _is_lyric_line(line, is_link=is_link):
-            current.append(line)
+            current.append(_collapse_duplicate_phrase(line))
             continue
         if _is_separator(line):
             continue
@@ -163,7 +252,18 @@ def extract_lyrics(page: str, *, min_lines: int = 6) -> tuple[str, ...]:
         current = []
     if len(current) > len(best):
         best = current
+    best = _collapse_duplicated_block(best)
     if len(best) < max(1, min_lines):
+        return ()
+    # A page that lists hundreds of other songs has no single transcription; the
+    # longest run is the catalogue itself (allklyrics.com, 353 lines).
+    if len(best) > _MAX_LYRIC_LINES:
+        return ()
+    # "1 욥이 대답하여 이르되 / 2 오늘도 내게 반항하는 마음과 …" is a passage, not a
+    # song. Requiring half the run as well keeps a blog that quotes three verses
+    # *around* its lyrics from being rejected.
+    verse_lines = sum(1 for line in best if _VERSE_LINE_RE.match(line))
+    if verse_lines >= _MIN_VERSE_LINES and verse_lines * 2 >= len(best):
         return ()
     # A page that publishes the lyrics as an image still has menus, "악보",
     # "영상보기" and related-post lists. Those lines are short, while real lyric
@@ -290,17 +390,49 @@ def collect_and_vote(
             f"'{text}' 가사를 찾지 못했습니다. 직접 입력을 사용하세요."
         )
 
+    # Deterministic order: the vote's medoid, the candidate list and therefore
+    # ``--index`` must not change with the order pages happened to arrive in
+    # (ADR-020).
+    transcripts.sort(key=lambda item: (item.source, item.url))
+
     consensus = cross_check(
         [Transcript(item.source, item.lines, item.url) for item in transcripts]
     )
-    progress.report(f"{len(transcripts)}개 전사본 교차검증 완료 → {len(consensus.lines)}줄")
+    progress.report(_consensus_progress(consensus))
     log.info(
-        "blog voted pages=%d lines=%d disputed=%d",
+        "blog voted pages=%d of=%d lines=%d disputed=%d",
         consensus.source_count,
+        consensus.pages_seen,
         len(consensus.lines),
         len(consensus.disagreements),
     )
     return consensus, tuple(transcripts)
+
+
+def _consensus_progress(consensus: Consensus) -> str:
+    """One honest line about the vote; a single page is never a cross-check.
+
+    The user sees this line while the collect runs and it becomes the last step
+    of the progress card, so it must not claim agreement the vote did not have
+    (ADR-019/ADR-020).
+    """
+    if consensus.cross_checked:
+        return f"{consensus.source_count}개 전사본 교차검증 완료 → {len(consensus.lines)}줄"
+    if consensus.pages_seen > 1:
+        return (
+            f"교차검증 안 됨 — 후보 {consensus.pages_seen}개가 서로 다른 곡입니다"
+            f" ({len(consensus.lines)}줄)"
+        )
+    return f"교차검증 안 됨 — 가사를 준 페이지가 1장뿐입니다 ({len(consensus.lines)}줄)"
+
+
+def _consensus_artist(consensus: Consensus) -> str:
+    """Short label for the voted candidate, shown next to the title in the UI."""
+    if consensus.cross_checked:
+        return f"교차검증 {consensus.source_count}곳"
+    if consensus.pages_seen > 1:
+        return f"교차검증 안 됨 — 후보 {consensus.pages_seen}개가 서로 다름"
+    return "교차검증 안 됨 — 페이지 1장"
 
 
 class BlogLyricsSource:
@@ -316,7 +448,7 @@ class BlogLyricsSource:
         songs = [
             RawSong(
                 title=(query or "").strip(),
-                artist=f"교차검증 {consensus.source_count}곳",
+                artist=_consensus_artist(consensus),
                 lyrics="\n".join(consensus.lines),
                 source_name=self.name,
                 source_url=transcripts[0].url,
@@ -326,7 +458,10 @@ class BlogLyricsSource:
             songs.append(
                 RawSong(
                     title=(query or "").strip(),
-                    artist=item.source,
+                    # Host *and* size: five page candidates used to be shown with
+                    # the same title and host-only artist, which told the user
+                    # nothing about which one to pick (ADR-020).
+                    artist=f"{item.source} · {len(item.lines)}줄",
                     lyrics="\n".join(item.lines),
                     source_name=self.name,
                     source_url=item.url,

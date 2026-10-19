@@ -17,7 +17,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from lyrics2pptx import cli, config
+from lyrics2pptx import cli, config, pipeline
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
@@ -260,6 +260,74 @@ class BuildSuccessTests(unittest.TestCase):
                 )
                 self.assertEqual(code, 0)
                 self.assertTrue(out_path.is_file())
+
+
+class CrossCheckWordingTests(unittest.TestCase):
+    """``--cross-check`` must not print "교차검증" for a single page (ADR-020).
+
+    Live, the vote kept one bible.com verse page for '정금같이 나오리라' and the
+    header still read "1곳 교차검증"; the wording is part of the contract because
+    it is the only thing a script or a user reads.
+    """
+
+    @staticmethod
+    def _result(*, cross_checked: bool, pages_seen: int):
+        return pipeline.CrossCheckResult(
+            query="정금같이 나오리라",
+            lines=("나의 가는 길을 오직 그가 아시나니",),
+            detail=(
+                pipeline.CrossCheckLine(
+                    text="나의 가는 길을 오직 그가 아시나니",
+                    support=1,
+                    total=1,
+                    variants=(),
+                ),
+            ),
+            source_count=1,
+            cross_checked=cross_checked,
+            pages_seen=pages_seen,
+        )
+
+    def test_single_page_is_not_called_a_cross_check(self) -> None:
+        result = self._result(cross_checked=False, pages_seen=1)
+        with mock.patch.object(pipeline, "cross_check", return_value=result):
+            code, out, _ = run_cli(["--query", "정금같이 나오리라", "--cross-check"])
+        self.assertEqual(code, 0)
+        self.assertIn("교차검증 안 됨", out)
+        self.assertNotIn("곳 교차검증", out)
+        self.assertIn("1장뿐", out)
+
+    def test_disagreeing_candidates_are_reported_as_different_songs(self) -> None:
+        result = self._result(cross_checked=False, pages_seen=2)
+        with mock.patch.object(pipeline, "cross_check", return_value=result):
+            code, out, _ = run_cli(["--query", "정금같이 나오리라", "--cross-check"])
+        self.assertEqual(code, 0)
+        self.assertIn("후보 2개가 서로 다른 곡", out)
+
+    def test_a_real_cross_check_keeps_the_original_wording(self) -> None:
+        base = self._result(cross_checked=True, pages_seen=3)
+        result = pipeline.CrossCheckResult(
+            query=base.query,
+            lines=base.lines,
+            detail=base.detail,
+            source_count=3,
+            cross_checked=True,
+            pages_seen=3,
+        )
+        with mock.patch.object(pipeline, "cross_check", return_value=result):
+            code, out, _ = run_cli(["--query", "정금같이 나오리라", "--cross-check"])
+        self.assertEqual(code, 0)
+        self.assertIn("3곳 교차검증", out)
+        self.assertNotIn("경고", out)
+
+    def test_json_carries_the_same_flags(self) -> None:
+        result = self._result(cross_checked=False, pages_seen=2)
+        with mock.patch.object(pipeline, "cross_check", return_value=result):
+            code, out, _ = run_cli(["--query", "정금같이 나오리라", "--cross-check", "--json"])
+        self.assertEqual(code, 0)
+        payload = json.loads(out)
+        self.assertFalse(payload["cross_checked"])
+        self.assertEqual(payload["pages_seen"], 2)
 
 
 if __name__ == "__main__":

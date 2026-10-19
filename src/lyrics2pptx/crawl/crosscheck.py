@@ -30,6 +30,14 @@ The reference is the *medoid* transcript (the one most similar to all others),
 so the consensus keeps the line shape most publishers use. A transcript that is
 not the same song (an unrelated search hit, or a page whose "lyrics" are an
 image and whose menu was scraped) is dropped before voting.
+
+Dropping pages is not the same thing as agreement, and the two are easy to
+confuse: when it kept only the medoid the vote still reported a "합의" — which is
+how a bible.com verse page became the lyrics for "정금같이 나오리라" (ADR-020).
+The result is still returned when fewer than :data:`MIN_SOURCE_COUNT`
+transcriptions survive (the user needs something to look at), but
+:attr:`Consensus.cross_checked` is then False and every caller must label it
+"교차검증 안 됨" rather than "합의".
 """
 
 from __future__ import annotations
@@ -44,9 +52,16 @@ __all__ = [
     "Transcript",
     "LineConsensus",
     "Consensus",
+    "MIN_SOURCE_COUNT",
     "line_key",
     "cross_check",
 ]
+
+#: Minimum number of *independent* transcriptions that must take part before the
+#: result may be called a cross-check. One page is one person's typing: calling
+#: it "합의" is the lie that made a Bible-verse page the lyrics for
+#: "정금같이 나오리라" (ADR-020).
+MIN_SOURCE_COUNT = 2
 
 #: Minimum character similarity for two *different* lines to count as the same
 #: lyric position. One substitution in an eight-syllable line scores ~0.875;
@@ -121,10 +136,17 @@ class LineConsensus:
 
 @dataclass(frozen=True, slots=True)
 class Consensus:
-    """A voted lyric plus the per-position evidence that produced it."""
+    """A voted lyric plus the per-position evidence that produced it.
+
+    ``source_count`` is how many transcriptions actually voted; ``pages_seen`` is
+    how many were offered. They differ when the consistency filter dropped pages
+    that disagree (a different song, a list page), which is exactly the case a
+    caller must not present as agreement (ADR-020).
+    """
 
     entries: tuple[LineConsensus, ...]
     source_count: int
+    pages_seen: int = 0
 
     @property
     def lines(self) -> tuple[str, ...]:
@@ -135,6 +157,16 @@ class Consensus:
     def disagreements(self) -> tuple[LineConsensus, ...]:
         """Positions whose transcripts did not all agree."""
         return tuple(entry for entry in self.entries if entry.disputed)
+
+    @property
+    def cross_checked(self) -> bool:
+        """True when at least two independent transcriptions voted."""
+        return self.source_count >= MIN_SOURCE_COUNT
+
+    @property
+    def contested(self) -> bool:
+        """True when transcriptions that disagreed were dropped before voting."""
+        return self.pages_seen > self.source_count
 
 
 def _mode(values: Iterable[str]) -> tuple[str, int]:
@@ -298,7 +330,9 @@ def cross_check(
 
     Returns:
         A :class:`Consensus`; ``source_count`` is the number of non-empty
-        transcripts that took part (0 when every transcript was empty).
+        transcripts that took part (0 when every transcript was empty) and
+        ``pages_seen`` is how many were offered. A caller must check
+        :attr:`Consensus.cross_checked` before calling the result a consensus.
     """
     cleaned: list[Transcript] = []
     for transcript in transcripts:
@@ -306,8 +340,13 @@ def cross_check(
         if lines:
             cleaned.append(Transcript(transcript.source, lines, transcript.url))
     if not cleaned:
-        return Consensus(entries=(), source_count=0)
+        return Consensus(entries=(), source_count=0, pages_seen=0)
 
+    # The medoid is picked by similarity, and ties fall to the first transcript,
+    # so the input order must not decide the vote: two runs over the same pages
+    # otherwise return different lyrics (ADR-020).
+    cleaned.sort(key=lambda item: (item.source, item.url or ""))
+    pages_seen = len(cleaned)
     cleaned = _keep_consistent(cleaned, min_similarity=min_similarity)
     total = len(cleaned)
     reference = cleaned[_medoid_index(cleaned)]
@@ -359,4 +398,4 @@ def cross_check(
         while entries and entries[-1].support < 2:
             entries.pop()
 
-    return Consensus(entries=tuple(entries), source_count=total)
+    return Consensus(entries=tuple(entries), source_count=total, pages_seen=pages_seen)

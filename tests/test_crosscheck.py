@@ -9,7 +9,12 @@ from __future__ import annotations
 
 import unittest
 
-from lyrics2pptx.crawl.crosscheck import Transcript, cross_check, line_key
+from lyrics2pptx.crawl.crosscheck import (
+    MIN_SOURCE_COUNT,
+    Transcript,
+    cross_check,
+    line_key,
+)
 
 SONG = (
     "주 말씀이 선포되고",
@@ -106,6 +111,64 @@ class VoteTests(unittest.TestCase):
         consensus = cross_check([padded, Transcript("b", SONG)])
         self.assertEqual(consensus.source_count, 2)
         self.assertEqual(consensus.lines, SONG)
+
+
+class HonestyTests(unittest.TestCase):
+    """Dropping pages is not agreeing: a one-page result is not a 합의 (ADR-020).
+
+    Live, the vote reduced four pages for '정금같이 나오리라' to the single
+    bible.com verse page and still reported "1곳 교차검증" — the label the user
+    reads must distinguish the two cases.
+    """
+
+    OTHER = (
+        "완전히 다른 노래입니다",
+        "이 가사는 전혀 상관이 없습니다",
+        "그래서 투표에서 빠져야 합니다",
+        "다른 주제의 문장입니다",
+    )
+
+    def test_one_transcript_is_not_cross_checked(self) -> None:
+        consensus = cross_check([Transcript("only", SONG)])
+        self.assertEqual(consensus.source_count, 1)
+        self.assertEqual(consensus.pages_seen, 1)
+        self.assertFalse(consensus.cross_checked)
+        self.assertFalse(consensus.contested)
+        self.assertEqual(consensus.lines, SONG)
+
+    def test_two_agreeing_pages_are_cross_checked(self) -> None:
+        consensus = cross_check([Transcript("a", SONG), Transcript("b", SONG)])
+        self.assertTrue(consensus.cross_checked)
+        self.assertFalse(consensus.contested)
+
+    def test_dropping_a_disagreeing_page_leaves_the_vote_unchecked(self) -> None:
+        consensus = cross_check([Transcript("a", SONG), Transcript("b", self.OTHER)])
+        self.assertEqual(consensus.source_count, 1)
+        self.assertEqual(consensus.pages_seen, 2)
+        self.assertFalse(consensus.cross_checked)
+        self.assertTrue(consensus.contested)
+
+    def test_the_threshold_is_the_documented_constant(self) -> None:
+        self.assertEqual(MIN_SOURCE_COUNT, 2)
+
+    def test_arrival_order_does_not_change_the_consensus(self) -> None:
+        typo = tuple(
+            "에스길의 환상처럼" if line == "에스겔의 환상처럼" else line for line in SONG
+        )
+        pages = [Transcript("a", SONG), Transcript("b", SONG), Transcript("c", typo)]
+        forward = cross_check(pages)
+        backward = cross_check(list(reversed(pages)))
+        self.assertEqual(forward.lines, backward.lines)
+        self.assertEqual(
+            [entry.support for entry in forward.entries],
+            [entry.support for entry in backward.entries],
+        )
+        self.assertEqual(forward.source_count, backward.source_count)
+
+    def test_no_transcript_reports_no_pages_seen(self) -> None:
+        consensus = cross_check([])
+        self.assertEqual(consensus.pages_seen, 0)
+        self.assertFalse(consensus.cross_checked)
 
 
 class EvidenceTests(unittest.TestCase):

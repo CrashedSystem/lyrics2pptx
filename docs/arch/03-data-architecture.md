@@ -216,7 +216,7 @@ def describe_error(exc: BaseException) -> UserFacingError:
 | 데이터 | 저장 위치 | 수명 | 스키마 변경 시 |
 | --- | --- | --- | --- |
 | 산출 pptx | `output/<filename>.pptx` | 사용자 삭제 전까지 | 해당 없음 (파일 포맷은 OOXML) |
-| 검색 캐시 | 프로세스 메모리 `dict[str, tuple[RawSong, ...]]` | 프로세스 종료 시 소멸 | 재시작으로 초기화 |
+| 검색 캐시 | 프로세스 메모리 `dict[(source, 검색어), tuple[RawSong, ...]]` — **limit 은 키가 아니다**(ADR-020: 클릭한 `index` 와 빌드가 같은 목록을 보게) | 프로세스 종료 시 소멸 | 재시작으로 초기화 |
 | 템플릿 프로필 | 프로세스 메모리, `(path, size, mtime_ns)` 키 | 파일 변경 시 무효화 | 자동 재분석 |
 | fixture | `tests/fixtures/*.json|.txt` | 리포지토리 자산 | 테스트가 회귀 보호 |
 

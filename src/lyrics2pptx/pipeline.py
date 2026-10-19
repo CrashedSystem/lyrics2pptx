@@ -109,12 +109,18 @@ class CrossCheckResult:
     ``lines`` is exactly what ``--source blog --index 0`` would build; the
     ``detail`` entries let a human confirm or override the majority spelling
     first (ADR-018: majority vote, then user confirmation).
+
+    ``cross_checked`` is False when fewer than two independent pages voted, i.e.
+    ``lines`` is one page's typing and must not be called a 합의 (ADR-020);
+    ``pages_seen`` says how many independent pages were offered.
     """
 
     query: str
     lines: tuple[str, ...]
     detail: tuple[CrossCheckLine, ...]
     source_count: int
+    cross_checked: bool = False
+    pages_seen: int = 0
 
 
 # Exception type → (code, http_status, recoverable). Order matters: the first
@@ -142,8 +148,13 @@ _MESSAGE_TEMPLATE: dict[str, str] = {
     "INTERNAL": "처리하지 못한 오류가 발생했습니다.",
 }
 
-# (source, query, limit) -> candidates. process-lifetime cache (docs/arch/03 §5).
-_SEARCH_CACHE: dict[tuple[str, str, int], tuple[RawSong, ...]] = {}
+# (source, query) -> candidates. Process-lifetime cache (docs/arch/03 §5). The
+# *requested limit* is deliberately not part of the key: the UI shows the first
+# five candidates and the build re-asks for ``max(index + 1, 5)``, which used to
+# miss the cache and re-collect — a live search that returns different pages
+# second time round would then build a different song than the one the user
+# clicked (ADR-020). A request for more candidates than are cached re-collects.
+_SEARCH_CACHE: dict[tuple[str, str], tuple[RawSong, ...]] = {}
 
 
 def clear_search_cache() -> None:
@@ -205,14 +216,17 @@ def search_songs(
     if not text:
         raise ConfigError("검색어가 비어 있습니다")
 
-    key = (source, text, max(1, limit))
+    wanted = max(1, limit)
+    key = (source, text)
     if config.CACHE_ENABLED:
         cached = _SEARCH_CACHE.get(key)
-        if cached is not None:
+        # Enough for the caller (and implicitly for the build, which re-asks with
+        # the same or a smaller limit than the picker used).
+        if cached is not None and len(cached) >= wanted:
             log.debug("search cache hit source=%s query=%s", source, text[:60])
-            return list(cached)
+            return list(cached[:wanted])
 
-    songs = list(get_source(source).search(text, limit=key[2]))
+    songs = list(get_source(source).search(text, limit=wanted))
     if config.CACHE_ENABLED:
         _SEARCH_CACHE[key] = tuple(songs)
     return songs
@@ -268,6 +282,8 @@ def cross_check(query: str, *, max_pages: int | None = None) -> CrossCheckResult
             for entry in consensus.entries
         ),
         source_count=consensus.source_count,
+        cross_checked=consensus.cross_checked,
+        pages_seen=consensus.pages_seen,
     )
 
 
@@ -396,6 +412,9 @@ def run(
     else:
         if not query or not str(query).strip():
             raise ConfigError("검색어(query)나 직접 입력(raw_text/lines) 중 하나가 필요합니다")
+        # The UI offers at most ``_SEARCH_LIMIT`` candidates, so ``index`` stays
+        # inside the cached list and the build cannot silently pick a different
+        # page than the one the user clicked (ADR-020, see ``_SEARCH_CACHE``).
         candidates = search_songs(query, source=source, limit=max(index + 1, 5))
         if index < 0 or index >= len(candidates):
             raise SourceNotFoundError(f"선택한 검색 결과가 없습니다 (index={index})")

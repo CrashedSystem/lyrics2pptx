@@ -5,7 +5,7 @@
 서버·클라우드·계정이 필요 없고, 실행은 Windows 로컬 프로세스 하나와 로컬 웹서버(127.0.0.1)뿐이다.
 템플릿은 **읽기 전용 입력**으로만 열리며 절대 수정되지 않는다.
 
-> 상태: `src/`+`web/` 구현 완료. 테스트 `427 tests OK`. 진입점 `python -m lyrics2pptx.cli` / `python -m lyrics2pptx.webapp` / 더블클릭 `lyrics2pptx.vbs`. 기본 수집 소스는 `auto`(lrclib → 블로그 교차검증, ADR-018).
+> 상태: `src/`+`web/` 구현 완료. 테스트 `452 tests OK`. 진입점 `python -m lyrics2pptx.cli` / `python -m lyrics2pptx.webapp` / 더블클릭 `lyrics2pptx.vbs`. 기본 수집 소스는 `auto`(lrclib → 블로그 교차검증, ADR-018).
 
 ---
 
@@ -76,8 +76,8 @@ Windows 한국어 콘솔(cp949)에서는 위 명령의 한글이 깨질 수 있�
 | `--lines-file PATH` | 이미 정리된 줄 파일(한 줄 = 한 문장). 정규화 생략 |
 | `-o`, `--output PATH` | 출력 경로 (기본 `output\<제목>.pptx`) |
 | `--source NAME` | 수집 소스 이름: `auto`(기본)·`blog`·`lrclib`·`lyrics_ovh` |
-| `--index N` | 검색 결과 중 선택할 번호 (기본 `0`; `blog` 는 `0`=합의 가사, `1`~=개별 페이지) |
-| `--cross-check` | `--query` 로 블로그를 수집·교차검증해 **합의 줄 + 지지수 + 다른 표기**만 출력 (빌드 안 함) |
+| `--index N` | 검색 결과 중 선택할 번호 (기본 `0`; `blog` 는 `0`=합의 가사, `1`~=개별 페이지 `호스트 · N줄`) |
+| `--cross-check` | `--query` 로 블로그를 수집·교차검증해 **합의 줄 + 지지수 + 다른 표기**만 출력 (빌드 안 함). 2장 미만이 투표하면 "교차검증 안 됨"으로 정직하게 보고한다(ADR-020) |
 | `--dedupe-chorus` | 후렴 등 3회 이상 반복 줄을 2회까지만 유지 |
 | `--skip-slide N` | 배경 풀에서 제외할 템플릿 슬라이드 번호(1-based, 반복 가능) |
 | `--keep-notes` | 템플릿 노트(noteSlide)도 복제 (기본: 복제 안 함) |
@@ -105,6 +105,8 @@ Windows 한국어 콘솔(cp949)에서는 위 명령의 한글이 깨질 수 있�
 > `손잡고 함께 가세` → 1건, `생명샘` → 0건(미수록). 부하 시 `503` 은 재시도 레이어가 흡수한다.
 > lrclib 에 없는 곡은 기본 소스 `auto` 가 **블로그 검색 + 다수결 교차검증**으로 폴백한다(ADR-018):
 > `지금은 엘리야 때처럼` → 4페이지 채택/합의 24줄/불일치 15줄(오타 `에스길`→`에스겔` 자동 교정, 변형 보고).
+> 성경 구절과 제목이 같은 곡처럼 **함정이 있는 검색어**는 성경/목록 페이지를 후보에서 걸러내고(ADR-020),
+> 실제로 투표한 페이지가 2장 미만이면 `교차검증 안 됨` 으로 표시한다 — 「정금같이 나오리라」 실측 참조.
 
 ---
 
@@ -225,7 +227,7 @@ lyrics/
                            blog, crosscheck, chain, websearch/{base,ddg})
     text/                  정규화/2줄 분할 (normalize, split)
     pptx/                  템플릿 읽기·복제·채우기·쓰기 (writer*, builder, clone, fill…)
-  tests/                   427 tests (표준 unittest)
+  tests/                   452 tests (표준 unittest)
   docs/plan/ docs/arch/     설계 문서 · docs/guide/ 사용가이드 · docs/adr/ 결정 기록
 ```
 
@@ -237,8 +239,8 @@ lyrics/
 python -m unittest discover -s tests -t .
 ```
 
-검증된 결과(실제 실행): `Ran 427 tests … OK`, exit 0. 네트워크 실호출 0회이며 collect 단계는
-fixture/mock 으로 격리된다. `.\scripts\run.ps1 -Test` 도 동일하게 427 tests / OK / exit 0.
+검증된 결과(실제 실행): `Ran 452 tests … OK`, exit 0. 네트워크 실호출 0회이며 collect 단계는
+fixture/mock 으로 격리된다. `.\scripts\run.ps1 -Test` 도 동일하게 452 tests / OK / exit 0.
 
 정적 게이트:
 
@@ -278,6 +280,8 @@ fixture/mock 으로 격리된다. `.\scripts\run.ps1 -Test` 도 동일하게 427
   페이지·JS 렌더링 페이지는 수집하지 못한다. 다수결도 항상 정답은 아니므로(2-2 동률·후렴 합치기)
   `--cross-check` 로 지지수와 **다른 표기**를 확인하고 필요하면 개별 페이지(`--index 1`~)를 고른다.
   웹 수집은 페이지당 `HTTP_DELAY`(기본 2초)를 지켜 느리다(`BLOG_MAX_PAGES` 기본 5).
+  후보 목록의 첫 줄이 `교차검증 안 됨` 이면 **투표가 성립하지 않았다는 뜻**이므로(성경 구절 페이지,
+  목록 페이지, 동명이곡 등) 반드시 `호스트 · N줄` 라벨과 미리보기를 보고 고른다(ADR-020).
 - 자동 수집은 robots.txt 를 **우회하지 않는다**. `robots.txt` 404/410 은 "규칙 없음 → 허용"
   (RFC 9309), 그 외 실패는 차단이다. 그래서 `search.naver.com`·`openapi.naver.com`(둘 다 `Disallow: /`)
   경로는 **의도적으로 미탑재**다.

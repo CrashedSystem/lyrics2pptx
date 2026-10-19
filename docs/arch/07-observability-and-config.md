@@ -38,6 +38,7 @@ for noisy in ("pptx", "PIL", "lxml"): logging.getLogger(noisy).setLevel(logging.
 | 지연 대기 | `crawl.httputil` | DEBUG | `delay host=%s wait=%.2fs` | — |
 | 재시도 | `crawl.httputil` | WARNING | `retry attempt=%d status=%s backoff=%ds` | — |
 | 수집 성공 | `crawl.<site>` | INFO | `source=%s hits=%d chosen_index=%d` | 가사 본문 |
+| 교차검증 투표 | `crawl.blog` | INFO | `blog voted pages=%d of=%d lines=%d disputed=%d` (`of` = 제안된 페이지 수, ADR-020) | 가사 본문 |
 | 정규화 결과 | `text.normalize` | DEBUG | `normalized lines=%d dropped=%d` | 줄 텍스트 |
 | 분할 결과 | `text.split` | INFO | `split pairs=%d odd=%s` | 줄 텍스트 |
 | 복제 전략 선택 | `pptx.builder` | INFO | `clone strategy=%s (probe=%s)` | — |

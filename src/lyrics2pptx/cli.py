@@ -190,6 +190,8 @@ def _emit_cross_check(args: argparse.Namespace) -> int:
         payload = {
             "query": result.query,
             "source_count": result.source_count,
+            "pages_seen": result.pages_seen,
+            "cross_checked": result.cross_checked,
             "count": len(result.lines),
             "lines": list(result.lines),
             "detail": [asdict(item) for item in result.detail],
@@ -197,7 +199,23 @@ def _emit_cross_check(args: argparse.Namespace) -> int:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return 0
 
-    print(f"# {result.query} — {result.source_count}곳 교차검증, {len(result.lines)}줄")
+    # The header itself must not say "교차검증" for a single page: the previous
+    # wording printed "1곳 교차검증" for exactly that, and a bible.com verse page
+    # hid behind the word (ADR-020).
+    if result.cross_checked:
+        print(f"# {result.query} — {result.source_count}곳 교차검증, {len(result.lines)}줄")
+    else:
+        print(
+            f"# {result.query} — 교차검증 안 됨 (후보 {result.pages_seen}개),"
+            f" {len(result.lines)}줄"
+        )
+        if result.pages_seen > 1:
+            print(
+                f"# 경고: 후보 {result.pages_seen}개가 서로 다른 곡입니다."
+                " 아래 줄은 한 페이지의 필사본이므로 직접 확인하세요."
+            )
+        else:
+            print("# 경고: 가사를 준 페이지가 1장뿐입니다. 직접 확인하세요.")
     disputed = 0
     for number, item in enumerate(result.detail, 1):
         note = ""

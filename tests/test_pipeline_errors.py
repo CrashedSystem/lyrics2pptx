@@ -1,4 +1,5 @@
-"""Contract tests for ``pipeline.describe_error`` and ``resolve_output_path``.
+"""Contract tests for ``pipeline.describe_error``, ``resolve_output_path`` and the
+candidate cache (``pipeline.search_songs``).
 
 ``describe_error`` is the *only* error→message/status mapping (AD-09, docs/arch
 03 §4). The table below is a verbatim copy of that contract, so drift in either
@@ -9,8 +10,10 @@ from __future__ import annotations
 
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from lyrics2pptx import config, pipeline
+from lyrics2pptx.crawl import RawSong
 from lyrics2pptx.crawl.base import (
     SourceBlockedError,
     SourceNotFoundError,
@@ -105,6 +108,57 @@ class ResolveOutputPathTests(unittest.TestCase):
         path = pipeline.resolve_output_path(Path("sub/out.pptx"))
         self.assertTrue(path.is_absolute())
         self.assertEqual(path.name, "out.pptx")
+
+
+class CandidateCacheTests(unittest.TestCase):
+    """The list a picker shows and the list a build reads must be the same list.
+
+    ``run`` re-asks for ``max(index + 1, 5)`` candidates. While the cache key
+    included the requested limit, that request missed the cache and collected
+    again — so a live search that returned different pages the second time could
+    build a different song than the one the user clicked (ADR-020).
+    """
+
+    def setUp(self) -> None:
+        pipeline.clear_search_cache()
+        self.addCleanup(pipeline.clear_search_cache)
+
+    @staticmethod
+    def _source(calls: list[int]) -> object:
+        class FakeSource:
+            name = "fake"
+
+            def search(self, query: str, *, limit: int = 5) -> list[RawSong]:
+                calls.append(limit)
+                return [
+                    RawSong(
+                        title=f"{query}-{index}",
+                        artist=None,
+                        lyrics="한 줄",
+                        source_name="fake",
+                    )
+                    for index in range(limit)
+                ]
+
+        return FakeSource()
+
+    def test_a_smaller_limit_reuses_the_cached_collection(self) -> None:
+        calls: list[int] = []
+        with mock.patch.object(pipeline, "get_source", return_value=self._source(calls)):
+            first = pipeline.search_songs("q", limit=5)
+            again = pipeline.search_songs("q", limit=3)
+
+        self.assertEqual(calls, [5])
+        self.assertEqual(len(first), 5)
+        self.assertEqual([song.title for song in again], [song.title for song in first][:3])
+
+    def test_a_larger_limit_collects_again(self) -> None:
+        calls: list[int] = []
+        with mock.patch.object(pipeline, "get_source", return_value=self._source(calls)):
+            pipeline.search_songs("q", limit=2)
+            pipeline.search_songs("q", limit=6)
+
+        self.assertEqual(calls, [2, 6])
 
 
 if __name__ == "__main__":

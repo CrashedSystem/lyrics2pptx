@@ -41,10 +41,12 @@
 name: CI
 
 on:
+  # 저장소 기본 브랜치는 master 다(로컬 git init 기본값). 예전 필터 [main] 은 어느
+  # 이벤트에도 맞지 않아 공개 후 첫 푸시에서 워크플로가 한 번도 돌지 않았다.
   push:
-    branches: [main]
+    branches: [master]
   pull_request:
-    branches: [main]
+    branches: [master]
 
 # 최소 권한: 이 워크플로는 저장소를 읽기만 한다.
 permissions:

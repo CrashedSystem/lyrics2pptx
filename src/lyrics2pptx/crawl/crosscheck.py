@@ -40,6 +40,13 @@ open there means the page rendered that position differently, so the wording is
 reported as a variant of it instead of being appended as a stray last line
 (ADR-024).
 
+A wrapping difference cuts the other way too: a page can print one position on
+two lines where the others print it on one, so the consensus holds both the
+joined line and the pair it is made of. Whichever reading the pages agree on
+wins — if they prefer the joined text it replaces the pair, otherwise the pair
+stays and the joined text is the first fragment's variant; support counts only
+the pages that printed a reading, never both (ADR-029).
+
 Dropping pages is not the same thing as agreement, and the two are easy to
 confuse: when it kept only the medoid the vote still reported a "합의" — which is
 how a bible.com verse page became the lyrics for "정금같이 나오리라" (ADR-020).
@@ -422,6 +429,43 @@ def _gap_position(positions: Sequence[int | None], index: int, size: int) -> int
     return gap[0] if len(gap) == 1 else None
 
 
+def _joined_position(key: str, reference_keys: Sequence[str]) -> int | None:
+    """The index of the two adjacent reference lines ``key`` is made of (ADR-029).
+
+    ``line_key`` drops spaces, so a page that writes one position on one line
+    where the reference splits it into two (or the other way round) produces a key
+    equal to the concatenation of two neighbouring reference keys. Returning the
+    first index lets the caller treat the line as that *position* instead of an
+    extra verse. ``None`` means "no two neighbours spell this line".
+    """
+    for index in range(len(reference_keys) - 1):
+        first, second = reference_keys[index], reference_keys[index + 1]
+        if first and second and key == first + second:
+            return index
+    return None
+
+
+def _joined_pair(key: str, keys: Sequence[str], index: int) -> tuple[int, int] | None:
+    """The two lines that spell ``key``, wherever they sit in the consensus.
+
+    A page can also write a verse line together with the chorus line that follows
+    it, so a joined line is not always made of *neighbours*: 「아무것도 두려워
+    말라」 printed "내 맘이 힘에겨워 지칠지라도 주님 나를 지켜주시네" on one line
+    while the pair it is made of ("내 맘이 힘에겨워 지칠지라도", "주님 나를
+    지켜주시네") sat elsewhere in the song. ``index`` is the joined line itself: it
+    is never one of its own parts (ADR-029).
+    """
+    for first, first_key in enumerate(keys):
+        if first == index or not first_key:
+            continue
+        for second, second_key in enumerate(keys):
+            if second == index or not second_key:
+                continue
+            if key == first_key + second_key:
+                return first, second
+    return None
+
+
 def _vote(pairs: Sequence[tuple[str, str]], *, ref_key: str, total: int) -> LineConsensus:
     """Turn ``(key, spelling)`` pairs for one position into a consensus entry."""
     counts = Counter(key for key, _ in pairs)
@@ -533,6 +577,8 @@ def cross_check(
             unmatched.setdefault(key, []).append((transcript.source, line, gap))
 
     substituted: dict[int, list[str]] = {}
+    merged: dict[int, tuple[str, tuple[str, ...], int]] = {}
+    removed: set[int] = set()
     extras: dict[str, list[tuple[str, str]]] = {}
     extra_order: list[str] = []
     for key, occurrences in unmatched.items():
@@ -545,24 +591,57 @@ def cross_check(
             text, _ = _mode(line for _source, line, _gap in occurrences)
             substituted.setdefault(position, []).append(text)
             continue
-        extras[key] = [(source, line) for source, line, _gap in occurrences]
-        extra_order.append(key)
-
-    if substituted:
-        entries = [
-            LineConsensus(
-                text=entry.text,
-                support=entry.support,
-                total=entry.total,
-                variants=entry.variants
-                + tuple(
-                    spelling
-                    for spelling in substituted.get(index, ())
-                    if spelling not in entry.variants
-                ),
+        # One position written on two lines by the reference and on one line by
+        # the others (or the other way round) leaves a line whose text is exactly
+        # two adjacent reference lines joined. That is a wrapping difference, not
+        # an extra verse: a deck showed "여호와의 영광을" / "인정하는 것이" *and*
+        # the joined phrase, so the same words ran on three lines (조사보고서
+        # §16.4). At least two pages must agree on the joined text, so a page that
+        # merges everything by itself can never promote anything (ADR-029).
+        joint = _joined_position(key, reference_keys)
+        if joint is None or joint in removed or joint + 1 in removed:
+            extras[key] = [(source, line) for source, line, _gap in occurrences]
+            extra_order.append(key)
+            continue
+        text, _ = _mode(line for _source, line, _gap in occurrences)
+        if len(distinct) > max(entries[joint].support, entries[joint + 1].support):
+            # The pages prefer the joined text, so it replaces the pair. Support
+            # counts only the pages that printed it; the split rendering is
+            # reported as a variant and never added to the count (ADR-024/029).
+            variants = tuple(
+                dict.fromkeys(
+                    entries[joint].variants
+                    + entries[joint + 1].variants
+                    + (entries[joint].text, entries[joint + 1].text)
+                )
             )
-            for index, entry in enumerate(entries)
-        ]
+            merged[joint] = (text, tuple(v for v in variants if v != text), len(distinct))
+            removed.add(joint + 1)
+        else:
+            substituted.setdefault(joint, []).append(text)
+
+    if merged or substituted:
+        rebuilt: list[LineConsensus] = []
+        for index, entry in enumerate(entries):
+            if index in removed:
+                continue
+            text, variants, support = merged.get(index, (None, None, None))
+            if text is None:
+                text, support, variants = entry.text, entry.support, entry.variants
+            seen = set(variants)
+            for spelling in substituted.get(index, ()):
+                if spelling not in seen and spelling != text:
+                    seen.add(spelling)
+                    variants = variants + (spelling,)
+            rebuilt.append(
+                LineConsensus(
+                    text=text,
+                    support=support,
+                    total=entry.total,
+                    variants=variants,
+                )
+            )
+        entries = rebuilt
 
     for key in extra_order:
         occurrences = extras[key]
@@ -573,6 +652,69 @@ def cross_check(
         entries.append(
             LineConsensus(text=text, support=len(distinct), total=total, variants=())
         )
+
+    # A wrapping difference usually leaves the joined text between two positions
+    # (handled above), but a page can also print a verse's rows two at a time — a
+    # summary block at the top, or a wide layout — and then the anchor itself
+    # carries the joined line while the pair it is made of arrives as extra
+    # verses. 「주 은혜임을」 led with "주 나의 모습 보네 상한 나의 맘 보시네" and
+    # later sang "주 나의 모습 보네" / "상한 나의 맘 보시네": the same words twice
+    # (조사보고서 §16.4(5)). The pair is not always next to each other either —
+    # 「아무것도 두려워 말라」 wrote a verse line together with the chorus line
+    # that follows it. When the pair is the reading the pages agree on (both parts
+    # at least as agreed as the joined line), the joined line is dropped and
+    # reported as the first part's other rendering; a tie keeps both so no reading
+    # is lost (ADR-029). This runs *after* the extra verses are appended, because
+    # the parts may be the extras rather than the positions.
+    keys = [line_key(entry.text) for entry in entries]
+    drop: set[int] = set()
+    spellings: dict[int, list[str]] = {}
+    for index, entry in enumerate(entries):
+        if index in drop or not keys[index]:
+            continue
+        pair = _joined_pair(keys[index], keys, index)
+        if pair is None:
+            continue
+        first, second = pair
+        if first in drop or second in drop:
+            continue
+        # Both parts must themselves be agreed lines: a joined line that merely
+        # spells a common short phrase plus a one-off line ("주님" + a verse) is a
+        # real line, not a wrapping difference (ADR-029).
+        floor = max(2, min_support)
+        if entries[first].support < floor or entries[second].support < floor:
+            continue
+        strongest = max(entries[first].support, entries[second].support)
+        if entry.support < strongest:
+            spellings.setdefault(first, []).append(entry.text)
+            drop.add(index)
+        elif entry.support > strongest:
+            # The pages agree on the joined reading, so it replaces the pair and
+            # the split renderings stay as its variants (the same trade ADR-029
+            # makes for a joined line that arrives as an extra verse).
+            for part in {first, second}:
+                spellings.setdefault(index, []).append(entries[part].text)
+                drop.add(part)
+    if drop:
+        kept: list[LineConsensus] = []
+        for index, entry in enumerate(entries):
+            if index in drop:
+                continue
+            variants = entry.variants
+            seen = set(variants)
+            for spelling in spellings.get(index, ()):
+                if spelling not in seen and spelling != entry.text:
+                    seen.add(spelling)
+                    variants = variants + (spelling,)
+            if variants is not entry.variants:
+                entry = LineConsensus(
+                    text=entry.text,
+                    support=entry.support,
+                    total=entry.total,
+                    variants=variants,
+                )
+            kept.append(entry)
+        entries = kept
 
     # Trim chrome that only the reference carried at the very edges ("by 작성자",
     # "공유하기", a blog tagline). Interior one-off lines are kept: they are

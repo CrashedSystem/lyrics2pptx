@@ -354,3 +354,163 @@ class SamePositionTests(unittest.TestCase):
         )
         self.assertEqual(consensus.lines, SILOAM + (bridge,))
         self.assertEqual(_entry(consensus, bridge).support, 2)
+
+
+class WrappingTests(unittest.TestCase):
+    """One position on one line or on two: a wrapping difference (ADR-029).
+
+    Live, the deck for "물이 바다 덮음같이" carried "여호와의 영광을" /
+    "인정하는 것이" *and* the joined phrase the other pages print, so the same
+    words ran on three lines and the deck disagreed with the vote it reported
+    (§16.4). Two frames of reference are possible (either side can be the
+    anchor), so both directions are pinned here.
+    """
+
+    SPLIT = ("여호와의 영광을", "인정하는 것이", "땅에 가득하리라", "물이 바다 덮음같이")
+    JOINED = ("여호와의 영광을 인정하는 것이", "땅에 가득하리라", "물이 바다 덮음같이")
+    PHRASE = "여호와의 영광을 인정하는 것이"
+
+    def test_the_joined_reading_replaces_the_pair_when_pages_prefer_it(self) -> None:
+        """Three pages join the phrase, the anchor splits it: keep the phrase."""
+        chorus = self.JOINED[-2:]
+        consensus = cross_check(
+            [
+                Transcript("split", self.SPLIT),
+                Transcript("joined1", self.JOINED + chorus),
+                Transcript("joined2", self.JOINED + chorus),
+                Transcript("joined3", self.JOINED + chorus),
+            ]
+        )
+        entry = _entry(consensus, self.PHRASE)
+        self.assertEqual(entry.support, 3)
+        self.assertEqual(entry.variants, ("여호와의 영광을", "인정하는 것이"))
+        self.assertNotIn("여호와의 영광을", consensus.lines)
+
+    def test_a_joined_line_is_a_variant_when_the_pages_split(self) -> None:
+        """The anchor and the majority split the phrase: keep the two lines."""
+        chorus = self.SPLIT[-2:]
+        consensus = cross_check(
+            [
+                Transcript("split1", self.SPLIT),
+                Transcript("split2", self.SPLIT),
+                Transcript("split3", self.SPLIT),
+                Transcript("joined1", self.JOINED + chorus),
+                Transcript("joined2", self.JOINED + chorus),
+            ]
+        )
+        entry = _entry(consensus, "여호와의 영광을")
+        self.assertEqual(entry.support, 3)
+        self.assertIn(self.PHRASE, entry.variants)
+        self.assertNotIn(self.PHRASE, consensus.lines)
+
+    SHORT = ("주 나의 모습 보네", "상한 나의 맘 보시네", "주 나의 눈물 아네", "홀로 울던 맘 아시네")
+    SHORT_JOINED = (
+        "주 나의 모습 보네 상한 나의 맘 보시네",
+        "주 나의 눈물 아네 홀로 울던 맘 아시네",
+    )
+
+    def test_a_joined_block_in_the_anchor_loses_to_the_pair(self) -> None:
+        """The anchor prints a joined summary *and* the split verses (01, 04).
+
+        「주 은혜임을」 led with "주 나의 모습 보네 상한 나의 맘 보시네" and then
+        sang "주 나의 모습 보네" / "상한 나의 맘 보시네" — the same words twice.
+        The pair is what the pages agree on, so the joined reading becomes the
+        first fragment's variant (ADR-029).
+        """
+        chorus = self.SHORT + self.SHORT  # the other pages repeat the chorus
+        consensus = cross_check(
+            [
+                Transcript("summary", self.SHORT_JOINED + self.SHORT),
+                Transcript("plain1", chorus),
+                Transcript("plain2", chorus),
+            ]
+        )
+        self.assertEqual(consensus.lines, self.SHORT)
+        entry = _entry(consensus, "주 나의 모습 보네")
+        self.assertEqual(entry.support, 3)
+        self.assertEqual(entry.variants, ("주 나의 모습 보네 상한 나의 맘 보시네",))
+
+    def test_the_joined_variant_is_reported_once_when_the_anchor_repeats_it(self) -> None:
+        chorus = self.SHORT * 3
+        consensus = cross_check(
+            [
+                Transcript("summary", self.SHORT_JOINED + self.SHORT_JOINED + self.SHORT),
+                Transcript("plain1", chorus),
+                Transcript("plain2", chorus),
+            ]
+        )
+        self.assertEqual(consensus.lines, self.SHORT)
+        self.assertEqual(
+            _entry(consensus, "주 나의 모습 보네").variants,
+            ("주 나의 모습 보네 상한 나의 맘 보시네",),
+        )
+
+    APART_SPLIT = ("주님은 나의 산성", "아멘 아멘", "주의 이름 높여", "주님은 나의 요새")
+    APART_JOINED = "주님은 나의 산성 주님은 나의 요새"
+    APART_EXTRA = ("높이 계신 주께", "영원히 찬양해")
+
+    def test_a_joined_line_is_found_even_when_its_parts_sit_apart(self) -> None:
+        """「아무것도 두려워 말라」 joined a verse line with the chorus after it.
+
+        The joined line is not always made of *neighbours*: here "주님은 나의
+        산성" and "주님은 나의 요새" are separated by two other lines, and the
+        anchor still wrote them as one. The joined line loses (the pair is what
+        the pages agree on) and is reported as the first part's variant.
+        """
+        anchor = (
+            self.APART_SPLIT[0],
+            self.APART_SPLIT[1],
+            self.APART_JOINED,
+            self.APART_SPLIT[2],
+            self.APART_SPLIT[3],
+        )
+        pages = (
+            Transcript("plain1", self.APART_SPLIT + self.APART_EXTRA),
+            Transcript("plain2", self.APART_SPLIT + self.APART_EXTRA),
+        )
+        consensus = cross_check([Transcript("anchor", anchor), *pages])
+        self.assertNotIn(self.APART_JOINED, consensus.lines)
+        self.assertEqual(_entry(consensus, "주님은 나의 산성").support, 3)
+        self.assertIn(self.APART_JOINED, _entry(consensus, "주님은 나의 산성").variants)
+
+    def test_a_joined_reading_the_pages_agree_on_replaces_the_pair(self) -> None:
+        """Both directions are possible: here the pages prefer the joined line.
+
+        The joined line wins and the split pair becomes its variants — leaving
+        both would print the same words twice.
+        """
+        tail = ("아멘 아멘", "주의 이름 높여", "높이 계신 주께", "영원히 찬양해")
+        split = ("주님은 나의 산성", "주님은 나의 요새") + tail
+        joined = (self.APART_JOINED,) + tail
+        consensus = cross_check(
+            [
+                Transcript("joined1", joined),
+                Transcript("joined2", joined),
+                Transcript("joined3", joined),
+                Transcript("split1", split),
+                Transcript("split2", split),
+            ]
+        )
+        entry = _entry(consensus, self.APART_JOINED)
+        self.assertEqual(entry.support, 3)
+        self.assertEqual(entry.variants, ("주님은 나의 산성", "주님은 나의 요새"))
+        self.assertNotIn("주님은 나의 산성", consensus.lines)
+        self.assertNotIn("주님은 나의 요새", consensus.lines)
+
+    def test_one_page_that_joins_everything_promotes_nothing(self) -> None:
+        """A single page is never enough, however long its lines are."""
+        spaced = tuple(
+            "땅에 가득 하리라" if line == "땅에 가득하리라" else line
+            for line in self.SPLIT
+        )
+        consensus = cross_check(
+            [
+                Transcript("once", self.SPLIT),
+                Transcript("spaced", spaced),
+                Transcript("merger", (self.SPLIT[0] + " " + self.SPLIT[1] + " 땅에 가득하리라", self.SPLIT[-1])),
+            ]
+        )
+        self.assertEqual(consensus.lines, self.SPLIT)
+        for entry in consensus.entries:
+            self.assertNotIn("여호와의 영광을 인정하는 것이 땅에 가득하리라", entry.variants)
+

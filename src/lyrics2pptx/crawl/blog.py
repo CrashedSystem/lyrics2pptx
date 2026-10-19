@@ -13,7 +13,8 @@ same songs *are* transcribed on ordinary blogs. This adapter therefore:
 
 The first returned candidate is the *consensus* (majority spelling); the
 remaining candidates are the individual transcriptions, so the user can compare
-and pick another one when the majority is wrong.
+and pick another one when the majority is wrong. Pages the vote refused come
+last and are labelled ``(투표 제외)`` (ADR-021).
 
 Multiple pages that carry byte-identical text count as **one** vote, not many:
 mirrors are common and would otherwise outvote independent transcriptions.
@@ -85,6 +86,12 @@ _NOISE_RE = re.compile(
 _PROSE_END_RE = re.compile(
     r"(?:[.!?…]|습니다|입니다|합니다|됩니다|십니다|십시오|세요|니까|는데요)\s*$"
 )
+# A site's own counters sit in brackets at the end of a line ("메일로 (0)",
+# "어린이찬송가 (478)", "분류 전체보기 (8015)"). Real lyric lines do not end with a
+# bare number, but a tistory sidebar notice did, so that page's "lyrics" became
+# eleven furniture lines and it was still offered as a candidate (ADR-021).
+# Only digits count, so an ad-lib like "(사랑해요 영원히)" and "(2절)" are untouched.
+_COUNT_SUFFIX_RE = re.compile(r"\(\s*\d{1,6}\s*\)\s*$")
 _HANGUL_RE = re.compile(r"[가-힣]")
 # Verse numbers and section labels ("후렴", "[Verse 2]") sit between verses and
 # must not break a run. ``text.normalize`` owns the canonical N6 pattern, but
@@ -196,6 +203,8 @@ def _is_lyric_line(line: str, *, is_link: bool = False) -> bool:
         return False
     if _PROSE_END_RE.search(line):
         return False
+    if _COUNT_SUFFIX_RE.search(line):
+        return False
     hangul = len(_HANGUL_RE.findall(line))
     visible = len(line.replace(" ", ""))
     if hangul < 2 or hangul * 2 < visible:
@@ -306,11 +315,19 @@ def _is_http_url(url: str) -> bool:
 
 @dataclass(frozen=True, slots=True)
 class TranscriptPage:
-    """One fetched page that yielded lyrics."""
+    """One fetched page that yielded lyrics.
+
+    ``voted`` is False when the consistency filter refused the page (it is not
+    the same song, or its "lyrics" were page furniture). Such a page is still
+    shown so the user can look at it, but it must be labelled: offering it as if
+    it had taken part in the vote is how a sidebar notice became wildcard
+    alternative slides (ADR-021).
+    """
 
     source: str
     url: str
     lines: tuple[str, ...]
+    voted: bool = True
 
 
 def _search_backend():
@@ -398,6 +415,20 @@ def collect_and_vote(
     consensus = cross_check(
         [Transcript(item.source, item.lines, item.url) for item in transcripts]
     )
+    # Pages the vote refused are marked, not hidden, and the voting ones are put
+    # first so ``--index 1`` is a real transcription rather than the page that
+    # happened to be dropped (ADR-021).
+    dropped = set(consensus.dropped)
+    transcripts = [
+        TranscriptPage(
+            source=item.source,
+            url=item.url,
+            lines=item.lines,
+            voted=(item.url or item.source) not in dropped,
+        )
+        for item in transcripts
+    ]
+    transcripts.sort(key=lambda item: (not item.voted, item.source, item.url))
     progress.report(_consensus_progress(consensus))
     log.info(
         "blog voted pages=%d of=%d lines=%d disputed=%d",
@@ -460,8 +491,13 @@ class BlogLyricsSource:
                     title=(query or "").strip(),
                     # Host *and* size: five page candidates used to be shown with
                     # the same title and host-only artist, which told the user
-                    # nothing about which one to pick (ADR-020).
-                    artist=f"{item.source} · {len(item.lines)}줄",
+                    # nothing about which one to pick (ADR-020). A page the vote
+                    # refused says so, because its lines are not this song's
+                    # lyrics (ADR-021).
+                    artist=(
+                        f"{item.source} · {len(item.lines)}줄"
+                        + ("" if item.voted else " (투표 제외)")
+                    ),
                     lyrics="\n".join(item.lines),
                     source_name=self.name,
                     source_url=item.url,

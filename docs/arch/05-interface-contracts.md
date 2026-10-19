@@ -112,7 +112,7 @@ Content-Length: <n>
 | `--input-file` | 텍스트 파일(UTF-8) | — | 존재 검사 → `ConfigError` |
 | `-o/--output` | 출력 경로 | `output/<filename>` | 디렉터리 자동 생성 |
 | `--source` | 소스 이름(`auto`·`blog`·`lrclib`·`lyrics_ovh`) | `config.DEFAULT_SOURCE`=`auto` | `get_source()` 가 `ConfigError` |
-| `--index` | 검색 결과 선택 (`blog` 는 0=합의, 1~=개별 페이지 = `호스트 · N줄`) | `0` | 범위 밖 → `SourceNotFoundError` |
+| `--index` | 검색 결과 선택 (`blog` 는 0=합의, 1~=개별 페이지 = `호스트 · N줄`; 투표에서 빠진 페이지는 `(투표 제외)` 이며 뒤로 정렬) | `0` | 범위 밖 → `SourceNotFoundError` |
 | `--cross-check` | 블로그 수집·교차검증 결과만 출력(빌드 안 함). 2장 미만이 투표하면 헤더부터 `교차검증 안 됨` + 경고 줄, `--json` 은 `cross_checked`·`pages_seen` (ADR-020) | off | `--query` 필요 |
 | `--dedupe-chorus` | 후렴 중복 제거 | off | D5 |
 | `--skip-slide` | 배경 풀 제외(1-based, 반복) | 없음 | 범위 검증 → `ConfigError` |

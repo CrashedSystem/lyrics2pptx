@@ -152,6 +152,26 @@ OTHER_SONG_PAGE = """
 </div></body></html>
 """
 
+# tistory's notice/category sidebar, which the extractor read as that page's
+# lyrics because every line ends with the site's own counter in brackets. It was
+# offered as candidate [1] for '아주 먼 옛날' and clicking it produced eleven
+# slides of page furniture (ADR-021).
+SIDEBAR_NOTICE_PAGE = """
+<html><body><div>
+<p>분류 전체보기 (8015)</p>
+<p>메일로 (0)</p>
+<p>요청해도 (0)</p>
+<p>보내지 (0)</p>
+<p>않아요 (0)</p>
+<p>찬송가는 (0)</p>
+<p>문제로 (0)</p>
+<p>더이상 (0)</p>
+<p>공유하지 (0)</p>
+<p>않습니다 (0)</p>
+<p>어린이찬송가 (478)</p>
+</div></body></html>
+"""
+
 PAGES = {
     "https://a.example/1": LYRIC_PAGE,
     "https://b.example/2": LYRIC_PAGE,
@@ -242,6 +262,14 @@ class PagePlausibilityTests(unittest.TestCase):
         lines = blog.extract_lyrics(DOUBLED_BLOCK_PAGE)
         self.assertEqual(len(lines), 6)
         self.assertEqual(lines.count("나의 가는 길은 하나님이 아시나니"), 1)
+
+    def test_a_site_sidebar_is_not_a_transcription(self) -> None:
+        self.assertEqual(blog.extract_lyrics(SIDEBAR_NOTICE_PAGE), ())
+
+    def test_a_bracketed_count_is_not_a_lyric_but_an_adlib_is(self) -> None:
+        self.assertFalse(blog._is_lyric_line("메일로 (0)"))
+        self.assertFalse(blog._is_lyric_line("어린이찬송가 (478)"))
+        self.assertTrue(blog._is_lyric_line("사랑해요 (사랑해요 영원히)"))
 
 
 class StripHeadingsTests(unittest.TestCase):
@@ -423,6 +451,39 @@ class CandidateLabelTests(unittest.TestCase):
             },
         )
         self.assertEqual(songs[0].artist, "교차검증 안 됨 — 후보 2개가 서로 다름")
+
+    def test_a_page_the_vote_refused_is_labeled_and_sorted_last(self) -> None:
+        songs = self._search(
+            [
+                SearchResult("t", "https://a.example/1"),
+                SearchResult("t", "https://b.example/2"),
+            ],
+            {
+                "https://a.example/1": LYRIC_PAGE,
+                "https://b.example/2": OTHER_SONG_PAGE,
+            },
+        )
+        # index 1 is a page that really voted, so the first thing a user clicks is
+        # a transcription; the refused page is still offered, but it says so.
+        self.assertEqual(songs[0].source_url, "https://a.example/1")
+        self.assertEqual(songs[1].artist, "a.example · 9줄")
+        self.assertEqual(songs[2].artist, "b.example · 6줄 (투표 제외)")
+
+    def test_the_refused_page_stays_last_whatever_the_arrival_order(self) -> None:
+        pages = {
+            "https://a.example/1": LYRIC_PAGE,
+            "https://b.example/2": OTHER_SONG_PAGE,
+        }
+        forward = self._search(
+            [SearchResult("t", "https://a.example/1"), SearchResult("t", "https://b.example/2")],
+            pages,
+        )
+        backward = self._search(
+            [SearchResult("t", "https://b.example/2"), SearchResult("t", "https://a.example/1")],
+            pages,
+        )
+        self.assertEqual([song.artist for song in forward], [song.artist for song in backward])
+        self.assertEqual([song.source_url for song in forward], [song.source_url for song in backward])
 
     def test_not_cross_checked_is_announced_while_collecting(self) -> None:
         from lyrics2pptx.crawl import progress

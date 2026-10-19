@@ -142,11 +142,18 @@ class Consensus:
     how many were offered. They differ when the consistency filter dropped pages
     that disagree (a different song, a list page), which is exactly the case a
     caller must not present as agreement (ADR-020).
+
+    ``dropped`` names those filtered-out pages (``url`` when it has one, else
+    ``source``). Without it a caller can only offer the pages as if they had
+    voted: clicking the tistory page whose "lyrics" were the sidebar notice
+    ``메일로 (0) / 요청해도 (0) ...`` produced eleven lines of page furniture
+    (ADR-021).
     """
 
     entries: tuple[LineConsensus, ...]
     source_count: int
     pages_seen: int = 0
+    dropped: tuple[str, ...] = ()
 
     @property
     def lines(self) -> tuple[str, ...]:
@@ -346,9 +353,16 @@ def cross_check(
     # so the input order must not decide the vote: two runs over the same pages
     # otherwise return different lyrics (ADR-020).
     cleaned.sort(key=lambda item: (item.source, item.url or ""))
-    pages_seen = len(cleaned)
-    cleaned = _keep_consistent(cleaned, min_similarity=min_similarity)
+    offered = cleaned
+    pages_seen = len(offered)
+    cleaned = _keep_consistent(offered, min_similarity=min_similarity)
     total = len(cleaned)
+    kept = {(item.source, item.url) for item in cleaned}
+    dropped = tuple(
+        item.url or item.source
+        for item in offered
+        if (item.source, item.url) not in kept
+    )
     reference = cleaned[_medoid_index(cleaned)]
     reference_keys = [line_key(line) for line in reference.lines]
 
@@ -398,4 +412,9 @@ def cross_check(
         while entries and entries[-1].support < 2:
             entries.pop()
 
-    return Consensus(entries=tuple(entries), source_count=total, pages_seen=pages_seen)
+    return Consensus(
+        entries=tuple(entries),
+        source_count=total,
+        pages_seen=pages_seen,
+        dropped=dropped,
+    )

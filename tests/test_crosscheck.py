@@ -170,6 +170,23 @@ class HonestyTests(unittest.TestCase):
         self.assertEqual(consensus.pages_seen, 0)
         self.assertFalse(consensus.cross_checked)
 
+    def test_dropped_names_the_page_that_did_not_vote(self) -> None:
+        consensus = cross_check(
+            [
+                Transcript("a", SONG, "https://a.example/1"),
+                Transcript("b", self.OTHER, "https://b.example/2"),
+            ]
+        )
+        self.assertEqual(consensus.dropped, ("https://b.example/2",))
+
+    def test_dropped_falls_back_to_the_source_when_there_is_no_url(self) -> None:
+        consensus = cross_check([Transcript("a", SONG), Transcript("b", self.OTHER)])
+        self.assertEqual(consensus.dropped, ("b",))
+
+    def test_nothing_is_dropped_when_the_pages_agree(self) -> None:
+        consensus = cross_check([Transcript("a", SONG), Transcript("b", SONG)])
+        self.assertEqual(consensus.dropped, ())
+
 
 class EvidenceTests(unittest.TestCase):
     def test_disagreements_lists_only_disputed_positions(self) -> None:

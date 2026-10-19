@@ -41,6 +41,7 @@ _CRAWL_INFRASTRUCTURE = {
     f"{PACKAGE}.crawl",
     f"{PACKAGE}.crawl.base",
     f"{PACKAGE}.crawl.httputil",
+    f"{PACKAGE}.crawl.progress",
 }
 
 

@@ -39,6 +39,8 @@
 | GET | `/` | - | `web/index.html` | 500 |
 | GET | `/static/*` | - | `web/` 파일 | 404 |
 | GET | `/api/search?q=<검색어>&source=<name>` | 쿼리스트링 | `{ "results": [ {index,title,artist,source_name,preview_lines} ] }` | 400/502/504 |
+| GET | `/api/search/start?q=<검색어>&source=<name>` | 쿼리스트링 | `202 {job_id, state, elapsed_ms, steps, progress}` — 수집은 백그라운드 스레드 | 400 |
+| GET | `/api/search/job?id=<job_id>` | 쿼리스트링 | `200 {state: running\|done\|error, elapsed_ms, steps[{message,done?,total?,percent?}], progress, results?, error?}` | 404 |
 | POST | `/api/generate` | JSON `{ "source": "...", "index": 0, "lines": [...], "dedupe_chorus": false, "filename": "..." }` | `application/vnd.openxmlformats-officedocument.presentationml.presentation` 바이너리 | 400/500 |
 | POST | `/api/generate` (직접입력 모드) | JSON `{ "raw_text": "...", ... }` | 위와 동일 | 400/500 |
 
@@ -92,7 +94,8 @@
 
 | 요소 | 동작 |
 | --- | --- |
-| 검색 버튼 | `GET /api/search` → 결과 목록 채움 |
+| 검색 버튼 | `GET /api/search/start` → `GET /api/search/job` 폴링(400ms) → 결과 목록 채움 |
+| 검색 진행 표시 | 화면 하단 고정 카드: 단계 목록 + 경과 시간 + 진행 막대(총량을 아는 단계만 채워짐, 그 외는 흐르는 막대) |
 | 직접 입력 탭 | textarea 표시, 검색 대신 `raw_text`로 진행 |
 | 결과 선택 | `selectedLines` 확정 |
 | 미리보기 | 클라이언트에서 2줄 페어를 계산해 표시(서버 왕복 불필요) |

@@ -5,7 +5,7 @@
 서버·클라우드·계정이 필요 없고, 실행은 Windows 로컬 프로세스 하나와 로컬 웹서버(127.0.0.1)뿐이다.
 템플릿은 **읽기 전용 입력**으로만 열리며 절대 수정되지 않는다.
 
-> 상태: `src/`+`web/` 구현 완료. 테스트 `405 tests OK`. 진입점 `python -m lyrics2pptx.cli` / `python -m lyrics2pptx.webapp` / 더블클릭 `lyrics2pptx.vbs`. 기본 수집 소스는 `auto`(lrclib → 블로그 교차검증, ADR-018).
+> 상태: `src/`+`web/` 구현 완료. 테스트 `427 tests OK`. 진입점 `python -m lyrics2pptx.cli` / `python -m lyrics2pptx.webapp` / 더블클릭 `lyrics2pptx.vbs`. 기본 수집 소스는 `auto`(lrclib → 블로그 교차검증, ADR-018).
 
 ---
 
@@ -121,13 +121,21 @@ python -m lyrics2pptx.webapp        # 또는: .\scripts\run.ps1 -Web   또는: w
 `auto`(lrclib → 블로그 교차검증)이며 드롭다운에서 `blog`·`lrclib`·`lyrics_ovh` 로 바꿀 수 있다.
 `blog` 의 결과 `0`번은 **합의 가사**, 그 뒤는 개별 페이지 전사본이다(ADR-018).
 
+검색 중에는 화면 하단에 **진행 카드**가 고정된다(ADR-019): 지금 무엇을 하는지(단계 목록),
+얼마나 걸렸는지(경과 초), 어디까지 왔는지(진행 막대)를 보여 준다. 블로그 수집처럼 오래
+걸리는 단계는 `3/5 lyrics.co.kr 페이지 확인 중…` 처럼 **실제 페이지 수**를 함께 보고하며,
+총량을 알 수 없는 단계는 숫자를 지어내지 않고 흐르는 막대로 대신한다. 생성 중에도 같은
+카드가 쓰이므로 "멈춘 건지 도는 건지" 알 수 없던 구간이 없다.
+
 HTTP 라우트(로컬 전용):
 
 | 메서드 | 경로 | 역할 |
 | --- | --- | --- |
 | `GET` | `/` | UI 페이지 |
 | `GET` | `/static/*` | 정적 자산(web/ 밖으로 나가는 경로는 404) |
-| `GET` | `/api/search?q=…&source=…` | 검색 결과(제목/아티스트/부분 미리보기 3줄) |
+| `GET` | `/api/search?q=…&source=…` | 검색 결과(제목/아티스트/부분 미리보기 3줄) — 수집이 끝날 때까지 블로킹 |
+| `GET` | `/api/search/start?q=…&source=…` | 검색 작업 시작 → `202 {job_id, state, elapsed_ms, steps, progress}` |
+| `GET` | `/api/search/job?id=…` | 진행 스냅샷(400ms 폴링). `done` 이면 `results`, 실패면 `error` |
 | `POST` | `/api/preview` | `{raw_text, dedupe_chorus}` → 정규화된 줄 + 2줄 페어 |
 | `POST` | `/api/generate` | `{query\|raw_text\|lines, …}` → 생성된 `.pptx` 바이트 다운로드 |
 
@@ -217,7 +225,7 @@ lyrics/
                            blog, crosscheck, chain, websearch/{base,ddg})
     text/                  정규화/2줄 분할 (normalize, split)
     pptx/                  템플릿 읽기·복제·채우기·쓰기 (writer*, builder, clone, fill…)
-  tests/                   405 tests (표준 unittest)
+  tests/                   427 tests (표준 unittest)
   docs/plan/ docs/arch/     설계 문서 · docs/guide/ 사용가이드 · docs/adr/ 결정 기록
 ```
 
@@ -229,8 +237,8 @@ lyrics/
 python -m unittest discover -s tests -t .
 ```
 
-검증된 결과(실제 실행): `Ran 405 tests … OK`, exit 0. 네트워크 실호출 0회이며 collect 단계는
-fixture/mock 으로 격리된다. `.\scripts\run.ps1 -Test` 도 동일하게 405 tests / OK / exit 0.
+검증된 결과(실제 실행): `Ran 427 tests … OK`, exit 0. 네트워크 실호출 0회이며 collect 단계는
+fixture/mock 으로 격리된다. `.\scripts\run.ps1 -Test` 도 동일하게 427 tests / OK / exit 0.
 
 정적 게이트:
 

@@ -23,7 +23,17 @@
 | GET | `/` | — | `web/index.html` (text/html; charset=utf-8) | `do_GET` |
 | GET | `/static/*` | — | `web/` 내 파일 | `do_GET` |
 | GET | `/api/search?q=&source=` | 쿼리스트링 | `{"results":[SearchHit,...]}` | `_handle_search` |
+| GET | `/api/search/start?q=&source=` | 쿼리스트링 | `202 {"job_id", "state", "elapsed_ms", "steps", "progress"}` | `_handle_search_start` |
+| GET | `/api/search/job?id=` | 쿼리스트링 | `200` 작업 스냅샷 / `404 NOT_FOUND` | `_handle_search_job` |
+| GET | `/api/slides` · `/api/slides/{index}/thumbnail` | — | 슬라이드 메타 / PNG | `_handle_slides`, `_handle_thumbnail` |
+| POST | `/api/preview` | JSON | `{"lines":[...], "pairs":[...]}` | `_handle_preview` |
 | POST | `/api/generate` | JSON | pptx 바이너리 | `_handle_generate` |
+
+`/api/search/start` + `/api/search/job` 는 같은 계약의 두 조각이다(ADR-019): 수집은 블로킹이므로
+브라우저가 작업을 시작해 두고 400ms 간격으로 스냅샷을 폴링한다. 스냅샷은
+`{job_id, state: running|done|error, elapsed_ms, steps:[{message, done?, total?, percent?}], progress}` 이고
+`done` 이면 `results`, `error` 면 `error`(=`describe_error` 와 동일한 3필드)가 함께 온다.
+단발 `/api/search` 는 그대로 유지된다 — 스크립트와 테스트가 쓰는 계약이다.
 
 ### 2.2 요청/응답 스키마 (확정)
 

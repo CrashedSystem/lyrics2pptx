@@ -1,11 +1,17 @@
 """Local single-user web app (L4).
 
 An ``http.server`` front end for ``pipeline`` (docs/arch/05 §2, docs/plan/06
-§2): ``/``, ``/static/*``, ``/api/search``, ``/api/slides``,
-``/api/slides/{index}/thumbnail``, ``/api/preview`` and ``/api/generate``.
+§2): ``/``, ``/static/*``, ``/api/search``, ``/api/search/start``,
+``/api/search/job``, ``/api/slides``, ``/api/slides/{index}/thumbnail``,
+``/api/preview`` and ``/api/generate``.
 Nothing here contains domain logic: requests are validated, handed to
 ``pipeline.preview``/``pipeline.run``/``search_hits``, and the result is streamed
 back.
+
+``/api/search/start`` + ``/api/search/job`` exist because a collect can take ten
+seconds or more (a blog search fetches several pages politely). The single-shot
+``/api/search`` is kept for scripts and tests; the browser starts a job and polls
+it so it can show *which page* is being read instead of a frozen "검색 중…".
 
 Security boundary (docs/arch/06 §3): bound to ``127.0.0.1``, static serving is
 containment-checked against ``web/``, and request bodies are capped at
@@ -20,7 +26,7 @@ import logging
 import sys
 import threading
 import time
-from dataclasses import asdict
+from dataclasses import asdict, dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
@@ -94,10 +100,127 @@ def _coerce_int(value: object, default: int) -> int:
         return default
 
 
+# --- search jobs ----------------------------------------------------------
+# ``GET /api/search`` blocks for as long as the collect takes, and a blog collect
+# fetches several pages with a politeness delay between them, so the browser
+# shows the user "검색 중…" for ten seconds with nothing to look at. The browser
+# therefore starts a job and polls it, and the collector's progress lines
+# (``crawl.progress``) are recorded per job so the bar can say *which page* is
+# being read.
+#
+# Jobs are process-local and disposable: they are pruned by age and by count, and
+# a job the client never polls simply expires. Nothing here is durable state —
+# the one-shot ``/api/search`` remains the contract for scripts and tests.
+
+_JOB_TTL_SECONDS = 600.0
+_JOB_MAX = 32
+_JOB_STEPS_KEPT = 40
+_jobs: dict[str, "_SearchJob"] = {}
+_jobs_lock = threading.Lock()
+
+
+@dataclass
+class _SearchJob:
+    """One in-flight (or just-finished) collect the browser polls for progress."""
+
+    id: str
+    query: str
+    source: str
+    state: str = "running"  # running | done | error
+    steps: list[dict] = field(default_factory=list)
+    latest: dict | None = None
+    results: list[dict] | None = None
+    error: dict | None = None
+    started_at: float = field(default_factory=time.monotonic)
+    finished_at: float | None = None
+
+    def snapshot(self) -> dict:
+        """Return a JSON-ready view; safe to call from the request thread."""
+        with _jobs_lock:
+            now = self.finished_at if self.finished_at is not None else time.monotonic()
+            payload: dict = {
+                "job_id": self.id,
+                "state": self.state,
+                "elapsed_ms": int((now - self.started_at) * 1000),
+                "steps": [dict(step) for step in self.steps[-_JOB_STEPS_KEPT:]],
+                "progress": dict(self.latest) if self.latest else None,
+            }
+            if self.state == "done":
+                payload["results"] = list(self.results or [])
+            elif self.state == "error":
+                payload["error"] = dict(self.error or _INTERNAL_ERROR["error"])
+            return payload
+
+
+def _prune_jobs() -> None:
+    """Drop expired jobs, then the oldest ones over the cap. Call with the lock."""
+    cutoff = time.monotonic() - _JOB_TTL_SECONDS
+    for job_id, job in list(_jobs.items()):
+        if job.finished_at is not None and job.finished_at < cutoff:
+            del _jobs[job_id]
+    overflow = len(_jobs) - _JOB_MAX
+    if overflow > 0:
+        for job_id, _ in sorted(_jobs.items(), key=lambda item: item[1].started_at)[:overflow]:
+            del _jobs[job_id]
+
+
+def _record_step(job: _SearchJob, update) -> None:
+    """Progress sink: append/replace the newest line for ``job``.
+
+    Repeated identical messages replace each other (a page that is re-tried
+    should not fill the list), and the numbers are only published when the
+    collector actually knows them — an invented percentage is worse than none.
+    """
+    step: dict = {"message": update.message}
+    if update.percent is not None:
+        step.update(done=update.done, total=update.total, percent=update.percent)
+    with _jobs_lock:
+        if job.steps and job.steps[-1]["message"] == step["message"]:
+            job.steps[-1] = step
+        else:
+            job.steps.append(step)
+        job.latest = step
+
+
+def _run_search_job(job: _SearchJob) -> None:
+    """Worker thread body: collect with a progress sink installed."""
+    pipeline.set_progress_sink(lambda update: _record_step(job, update))
+    try:
+        hits = pipeline.search_hits(job.query, source=job.source)
+    except Lyrics2PptxError as exc:
+        facing = pipeline.describe_error(exc)
+        with _jobs_lock:
+            job.error = {
+                "code": facing.code,
+                "message": facing.message,
+                "recoverable": facing.recoverable,
+            }
+            job.state = "error"
+    except Exception:
+        log.exception("search job failed id=%s", job.id)
+        with _jobs_lock:
+            job.error = dict(_INTERNAL_ERROR["error"])
+            job.state = "error"
+    else:
+        with _jobs_lock:
+            job.results = [asdict(hit) for hit in hits]
+            job.state = "done"
+    finally:
+        pipeline.set_progress_sink(None)
+        with _jobs_lock:
+            job.finished_at = time.monotonic()
+        log.info(
+            "search job id=%s state=%s steps=%d",
+            job.id,
+            job.state,
+            len(job.steps),
+        )
+
+
 class Lyrics2PptxHandler(BaseHTTPRequestHandler):
     """Route dispatcher for ``/``, ``/static/*``, ``/api/search``,
-    ``/api/slides``, ``/api/slides/{index}/thumbnail``, ``/api/preview``, and
-    ``/api/generate``."""
+    ``/api/search/start``, ``/api/search/job``, ``/api/slides``,
+    ``/api/slides/{index}/thumbnail``, ``/api/preview``, and ``/api/generate``."""
 
     server_version = f"lyrics2pptx/{__version__}"
     protocol_version = "HTTP/1.1"
@@ -173,6 +296,10 @@ class Lyrics2PptxHandler(BaseHTTPRequestHandler):
                 self._serve_static(parsed.path[len("/static/") :])
             elif parsed.path == "/api/search":
                 self._handle_search(parse_qs(parsed.query), rid)
+            elif parsed.path == "/api/search/start":
+                self._handle_search_start(parse_qs(parsed.query))
+            elif parsed.path == "/api/search/job":
+                self._handle_search_job(parse_qs(parsed.query))
             elif parsed.path == "/api/slides":
                 self._handle_slides()
             elif parsed.path.startswith("/api/slides/"):
@@ -222,6 +349,39 @@ class Lyrics2PptxHandler(BaseHTTPRequestHandler):
             self._send_error(exc, rid)
             return
         self._send_json(200, {"results": [asdict(hit) for hit in hits]})
+
+    def _handle_search_start(self, params: dict[str, list[str]]) -> None:
+        """``GET /api/search/start`` — begin a collect, return its job id.
+
+        Validation that can be decided without the network happens here so the
+        browser gets an immediate 4xx; everything else surfaces as the job's
+        ``error`` state (the browser renders both the same way).
+        """
+        query = (params.get("q") or [""])[0].strip()
+        source = (params.get("source") or [config.DEFAULT_SOURCE])[0]
+        if not query:
+            raise ConfigError("검색어가 비어 있습니다")
+        job = _SearchJob(id=uuid4().hex[:12], query=query, source=source)
+        with _jobs_lock:
+            _prune_jobs()
+            _jobs[job.id] = job
+        threading.Thread(
+            target=_run_search_job,
+            args=(job,),
+            name=f"search-{job.id}",
+            daemon=True,
+        ).start()
+        self._send_json(202, job.snapshot())
+
+    def _handle_search_job(self, params: dict[str, list[str]]) -> None:
+        """``GET /api/search/job`` — current state of a started collect."""
+        job_id = (params.get("id") or [""])[0]
+        with _jobs_lock:
+            job = _jobs.get(job_id)
+        if job is None:  # expired or never existed: the client just restarts
+            self._send_json(404, _NOT_FOUND_ERROR)
+            return
+        self._send_json(200, job.snapshot())
 
     def _handle_slides(self) -> None:
         """``GET /api/slides`` — metadata for every selectable template slide."""

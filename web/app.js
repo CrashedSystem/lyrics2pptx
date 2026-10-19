@@ -25,11 +25,16 @@ var state = {
   page: 0,
   slideIndex: DEFAULT_SLIDE_INDEX,
   slides: [],
+  progressStartedAt: 0,
 };
 
 // 직접 입력 미리보기 요청 순번: 늦게 도착한 이전 응답을 무시한다.
 var previewRequestId = 0;
 var previewTimer = null;
+
+// 진행 표시: 검색/생성 중 경과 시간을 재는 시계와, "완료" 를 잠깐 보여주는 타이머.
+var progressClockTimer = null;
+var progressHideTimer = null;
 
 var el = {
   modeInputs: document.querySelectorAll('input[name="mode"]'),
@@ -56,7 +61,12 @@ var el = {
   downloadPanel: document.getElementById("download-panel"),
   downloadLink: document.getElementById("download-link"),
   error: document.getElementById("error"),
-  status: document.getElementById("status"),
+  progress: document.getElementById("progress"),
+  progressLabel: document.getElementById("progress-label"),
+  progressTime: document.getElementById("progress-time"),
+  progressTrack: document.getElementById("progress-track"),
+  progressFill: document.getElementById("progress-fill"),
+  progressSteps: document.getElementById("progress-steps"),
 };
 
 /* ---------------------------------------------------------------- helpers */
@@ -71,14 +81,107 @@ function clearError() {
   el.error.hidden = true;
 }
 
-function setStatus(message) {
-  if (message) {
-    el.status.textContent = message;
-    el.status.hidden = false;
+/* ---------------------------------------------------------------- progress */
+
+// 서버는 "몇 개 중 몇 번째" 를 실제로 알 때만 퍼센트를 보낸다(모르면 null).
+// 총량을 모를 때는 퍼센트를 지어내지 않고 흐르는 막대로 대신한다 — 숫자를
+// 보여주는 순간 사용자는 그 숫자를 믿기 때문이다.
+
+function buildStepItem(message) {
+  var li = document.createElement("li");
+  var mark = document.createElement("span");
+  mark.className = "mark";
+  mark.setAttribute("aria-hidden", "true");
+  var text = document.createElement("span");
+  text.className = "step-text";
+  text.textContent = message;
+  li.appendChild(mark);
+  li.appendChild(text);
+  return li;
+}
+
+function renderProgressSteps(steps) {
+  el.progressSteps.textContent = "";
+  var recent = steps.slice(-5);
+  recent.forEach(function (step, index) {
+    var isCurrent = index === recent.length - 1;
+    var li = buildStepItem(step.message);
+    li.className = isCurrent ? "current" : "done";
+    if (!isCurrent) li.querySelector(".mark").textContent = "✓";
+    el.progressSteps.appendChild(li);
+  });
+}
+
+function setProgressPercent(percent) {
+  var known = typeof percent === "number" && isFinite(percent);
+  el.progress.classList.toggle("indeterminate", !known);
+  if (known) {
+    var clamped = Math.max(0, Math.min(100, percent));
+    el.progressFill.style.width = clamped + "%";
+    el.progressTrack.setAttribute("aria-valuenow", String(Math.round(clamped)));
+    el.progressTrack.setAttribute("aria-valuetext", Math.round(clamped) + "%");
   } else {
-    el.status.textContent = "";
-    el.status.hidden = true;
+    el.progressFill.style.width = "";
+    el.progressTrack.removeAttribute("aria-valuenow");
+    el.progressTrack.setAttribute("aria-valuetext", "진행 중");
   }
+}
+
+function tickProgressClock() {
+  var seconds = (Date.now() - state.progressStartedAt) / 1000;
+  el.progressTime.textContent = seconds.toFixed(1) + "초";
+}
+
+function progressStart(label) {
+  if (progressHideTimer !== null) {
+    clearTimeout(progressHideTimer);
+    progressHideTimer = null;
+  }
+  state.progressStartedAt = Date.now();
+  el.progressLabel.textContent = label;
+  el.progressSteps.textContent = "";
+  el.progress.classList.remove("done");
+  el.progress.hidden = false;
+  setProgressPercent(null);
+  tickProgressClock();
+  if (progressClockTimer !== null) clearInterval(progressClockTimer);
+  progressClockTimer = setInterval(tickProgressClock, 100);
+}
+
+function progressStop() {
+  if (progressClockTimer !== null) {
+    clearInterval(progressClockTimer);
+    progressClockTimer = null;
+  }
+}
+
+// 완료: 막대를 가득 채우고 잠깐 보여준 뒤 사라진다(다음 작업은 progressStart 부터).
+function progressFinish(label) {
+  progressStop();
+  tickProgressClock();
+  el.progressLabel.textContent = label;
+  el.progress.classList.remove("indeterminate");
+  el.progress.classList.add("done");
+  el.progressFill.style.width = "100%";
+  el.progressTrack.setAttribute("aria-valuenow", "100");
+  el.progressTrack.setAttribute("aria-valuetext", "완료");
+  // 마지막 단계도 끝났으니 맥동하는 점을 체크로 바꾼다.
+  Array.prototype.forEach.call(el.progressSteps.children, function (li) {
+    li.className = "done";
+    li.querySelector(".mark").textContent = "✓";
+  });
+  progressHideTimer = setTimeout(function () {
+    el.progress.hidden = true;
+    progressHideTimer = null;
+  }, 1200);
+}
+
+// 실패: 진행 표시는 즉시 치우고 오류 문구만 남긴다.
+function progressFail() {
+  progressStop();
+  el.progress.hidden = true;
+  el.progress.classList.remove("done", "indeterminate");
+  el.progressSteps.textContent = "";
 }
 
 /* ------------------------------------------------------------ client rules */
@@ -265,6 +368,54 @@ function selectResult(index) {
   renderPreview();
 }
 
+/* ------------------------------------------------------------ search job */
+
+// 검색은 블로그 페이지를 여러 장 받아오느라 10초 이상 걸릴 수 있다. 그래서 한
+// 번에 응답을 기다리지 않고, 작업을 시작해 두고(202) 상태를 폴링하면서 진행
+// 상황을 그린다 (서버: /api/search/start + /api/search/job, crawl.progress).
+var SEARCH_POLL_MS = 400;
+
+function sleep(ms) {
+  return new Promise(function (resolve) {
+    setTimeout(resolve, ms);
+  });
+}
+
+async function startSearchJob(query, source) {
+  var url =
+    "/api/search/start?q=" +
+    encodeURIComponent(query) +
+    "&source=" +
+    encodeURIComponent(source);
+  var response = await fetch(url);
+  var payload = await response.json().catch(function () {
+    return {};
+  });
+  if (!response.ok) {
+    throw new Error((payload.error && payload.error.message) || "검색을 시작하지 못했습니다.");
+  }
+  return payload.job_id;
+}
+
+async function waitForSearchJob(jobId) {
+  for (;;) {
+    var response = await fetch("/api/search/job?id=" + encodeURIComponent(jobId));
+    var payload = await response.json().catch(function () {
+      return {};
+    });
+    if (!response.ok) {
+      throw new Error((payload.error && payload.error.message) || "검색 상태를 읽지 못했습니다.");
+    }
+    renderProgressSteps(payload.steps || []);
+    setProgressPercent(payload.progress ? payload.progress.percent : null);
+    if (payload.state === "done") return payload.results || [];
+    if (payload.state === "error") {
+      throw new Error((payload.error && payload.error.message) || "검색에 실패했습니다.");
+    }
+    await sleep(SEARCH_POLL_MS);
+  }
+}
+
 async function doSearch() {
   clearError();
   var query = el.query.value.trim();
@@ -275,15 +426,12 @@ async function doSearch() {
   state.query = query;
   state.busy = true;
   el.searchButton.disabled = true;
-  setStatus("검색 중…");
+  progressStart("가사를 찾는 중…");
   try {
-    var url = "/api/search?q=" + encodeURIComponent(query) + "&source=" + encodeURIComponent(el.source.value);
-    var response = await fetch(url);
-    var payload = await response.json();
-    if (!response.ok) {
-      throw new Error((payload.error && payload.error.message) || "검색에 실패했습니다.");
-    }
-    state.results = payload.results || [];
+    var jobId = await startSearchJob(query, el.source.value);
+    var results = await waitForSearchJob(jobId);
+    progressFinish(results.length ? "검색 완료 — " + results.length + "건" : "검색 완료 — 결과 없음");
+    state.results = results;
     state.selectedIndex = -1;
     state.selectedLines = [];
     state.previewPairs = null;
@@ -296,11 +444,11 @@ async function doSearch() {
       showError("검색 결과가 없습니다. 직접 입력을 사용해 보세요.");
     }
   } catch (err) {
+    progressFail();
     showError(err.message || "검색에 실패했습니다.");
   } finally {
     state.busy = false;
     el.searchButton.disabled = false;
-    setStatus("");
   }
 }
 
@@ -418,7 +566,7 @@ async function doGenerate() {
 
   state.busy = true;
   el.generateButton.disabled = true;
-  setStatus("PPTX 생성 중…");
+  progressStart("PPTX 생성 중…");
   try {
     var response = await fetch("/api/generate", {
       method: "POST",
@@ -435,12 +583,13 @@ async function doGenerate() {
     el.downloadLink.download = el.filename.value.trim() || "가사.pptx";
     el.downloadPanel.hidden = false;
     el.downloadLink.click();
+    progressFinish("PPTX 생성 완료");
   } catch (err) {
+    progressFail();
     showError(err.message || "생성에 실패했습니다.");
   } finally {
     state.busy = false;
     el.generateButton.disabled = false;
-    setStatus("");
   }
 }
 

@@ -28,7 +28,7 @@ from dataclasses import dataclass
 
 from .. import config
 from ..errors import ConfigError
-from . import httputil
+from . import httputil, progress
 from .base import RawSong, SourceError, SourceNotFoundError
 from .crosscheck import Consensus, Transcript, cross_check, line_key
 from .websearch import get_backend
@@ -235,17 +235,30 @@ def collect_and_vote(
     pages_wanted = config.BLOG_MAX_PAGES if max_pages is None else max(1, max_pages)
 
     backend = _search_backend()
+    progress.report("블로그 검색 중…")
     # Ask for extra hits: some pages publish the lyrics as an image or are
     # duplicates, so the first few results are not all usable.
     results = backend.search(f"{text} 가사", limit=max(pages_wanted * 2, pages_wanted))
+    progress.report(f"후보 {len(results)}건에서 가사를 확인합니다", done=0, total=pages_wanted)
 
     transcripts: list[TranscriptPage] = []
     fingerprints: set[str] = set()
+    checked = 0
     for result in results:
         if len(transcripts) >= pages_wanted:
             break
         if not _is_http_url(result.url):
             continue
+        checked += 1
+        # ``checked`` (attempts) rather than ``len(transcripts)`` (successes):
+        # the bar must move forward even when a page turns out to be unusable.
+        # The ``k/N`` prefix keeps two pages on the same host distinguishable,
+        # which also stops the UI from collapsing them into one line.
+        progress.report(
+            f"{min(checked, pages_wanted)}/{pages_wanted} {httputil.host_of(result.url)} 페이지 확인 중…",
+            done=min(checked, pages_wanted),
+            total=pages_wanted,
+        )
         try:
             page = httputil.get_text(result.url)
         except (SourceError, ValueError) as exc:
@@ -280,6 +293,7 @@ def collect_and_vote(
     consensus = cross_check(
         [Transcript(item.source, item.lines, item.url) for item in transcripts]
     )
+    progress.report(f"{len(transcripts)}개 전사본 교차검증 완료 → {len(consensus.lines)}줄")
     log.info(
         "blog voted pages=%d lines=%d disputed=%d",
         consensus.source_count,

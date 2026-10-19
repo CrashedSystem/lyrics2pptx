@@ -159,6 +159,37 @@ class CollectAndVoteTests(unittest.TestCase):
         with self.assertRaises(ConfigError):
             blog.collect_and_vote("   ")
 
+    def test_collect_reports_page_progress(self) -> None:
+        # The web UI turns these into the progress bar; a silent collect is a
+        # frozen bar, so the lines are part of the collector's contract.
+        from lyrics2pptx.crawl import progress
+
+        backend = FakeBackend(
+            [
+                SearchResult("t", "https://a.example/1"),
+                SearchResult("t", "https://c.example/3"),
+            ]
+        )
+        seen: list = []
+        progress.set_sink(seen.append)
+        self.addCleanup(progress.set_sink, None)
+        with mock.patch("lyrics2pptx.crawl.blog.get_backend", return_value=backend), mock.patch.object(
+            blog.httputil, "get_text", side_effect=lambda url: PAGES[url]
+        ):
+            blog.collect_and_vote("지금은 엘리야 때처럼", max_pages=2)
+
+        messages = [update.message for update in seen]
+        self.assertEqual(messages[0], "블로그 검색 중…")
+        self.assertIn("후보 2건에서 가사를 확인합니다", messages)
+        self.assertTrue(any(m.endswith("a.example 페이지 확인 중…") for m in messages))
+        self.assertTrue(any(m.startswith("1/2 ") for m in messages))
+        self.assertTrue(any("교차검증 완료" in m for m in messages))
+        # Only the steps whose total is actually known carry a percentage.
+        self.assertIsNone(seen[0].percent)
+        page_updates = [u for u in seen if u.message.endswith("페이지 확인 중…")]
+        self.assertTrue(page_updates)
+        self.assertTrue(all(u.percent is not None for u in page_updates))
+
 
 class BlogLyricsSourceTests(unittest.TestCase):
     def test_search_returns_the_consensus_first(self) -> None:

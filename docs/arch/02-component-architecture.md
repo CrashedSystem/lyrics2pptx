@@ -6,7 +6,7 @@
 
 ```
 L0  leaf       : errors.py, config.py, crawl/base.py
-L1  infrastructure : crawl/httputil.py
+L1  infrastructure : crawl/httputil.py, crawl/progress.py
 L2  domain     : text/normalize.py, text/split.py,
                  pptx/template_reader.py, pptx/clone.py, pptx/fill.py,
                  pptx/writer_parts.py, pptx/writer_zip.py,
@@ -28,6 +28,7 @@ L4 는 아무도 import 하지 않는다. L4 → L4 금지 (`cli` ↔ `webapp` �
 | `config.py` | L0 | 상수, 경로 해석, `os.environ` 읽기, 기본값 | 도메인 로직. **env 접근은 이 모듈에만 존재** |
 | `crawl/base.py` | L0 | `RawSong`, `Source` 프로토콜, `SourceError` 계층 | 네트워크 접근 |
 | `crawl/httputil.py` | L1 | robots 확인, UA, 지연, 재시도/백오프, fixture 훅 | 사이트별 파싱, 텍스트 정규화 |
+| `crawl/progress.py` | L1 | 수집 진행 상황 문자열의 스레드별 싱크(`report`/`set_sink`) — UI 표시 전용 | 수집 로직, 네트워크, 퍼센트 계산(총량은 수집기가 준다) |
 | `crawl/<site>.py` | L2 | 특정 소스 → `RawSong` 매핑 | 규칙 우회(직접 `urllib` 호출 금지), 파일 저장, 정규화 |
 | `crawl/blog.py` | L2 | 검색 결과 페이지에서 사이트 특정 셀렉터 없이 가사 런 추출 → 페이지별 전사본 | 검색 색인 자체(백엔드에 위임), `text` 의존(규칙 P4) |
 | `crawl/crosscheck.py` | L2 | 여러 전사본의 줄별 다수결(`Transcript`/`Consensus`), 순서 무관 최선매칭 | 네트워크, 파일 I/O, `text` 의존 |
@@ -55,15 +56,18 @@ lyrics2pptx/__init__.py       → errors.py, pipeline.py   (지연 재수출: PE
 cli.py                        → pipeline.py, config.py, errors.py
 webapp.py                     → pipeline.py, config.py, errors.py
 pipeline.py                   → crawl/__init__.py, crawl/blog.py, crawl/crosscheck.py,
+                                crawl/progress.py,
                                 text/normalize.py, text/split.py,
                                 pptx/__init__.py, pptx/builder.py, pptx/template_reader.py,
                                 config.py, errors.py
 crawl/__init__.py             → crawl/base.py, crawl/blog.py, crawl/chain.py,
                                 crawl/lyrics_ovh.py, crawl/lrclib.py, errors.py
-crawl/chain.py                → crawl/base.py, config.py
+crawl/chain.py                → crawl/base.py, crawl/progress.py, config.py
 crawl/blog.py                 → crawl/base.py, crawl/httputil.py, crawl/crosscheck.py,
+                                crawl/progress.py,
                                 crawl/websearch/__init__.py, config.py, errors.py
 crawl/crosscheck.py           → (표준 라이브러리만)
+crawl/progress.py             → (표준 라이브러리만)
 crawl/websearch/__init__.py   → crawl/websearch/base.py, crawl/websearch/ddg.py, config.py, errors.py
 crawl/websearch/ddg.py        → crawl/websearch/base.py, crawl/httputil.py, crawl/base.py, errors.py
 crawl/lrclib.py               → crawl/base.py, crawl/httputil.py, config.py
@@ -220,6 +224,43 @@ sequenceDiagram
   W-->>B: 200 + pptx bytes (Content-Disposition)
   B->>B: blob → <a download> 자동 클릭
 ```
+
+### 6.1 검색은 "작업 + 폴링" 이다 (ADR-019)
+
+`/api/search` 는 수집이 끝날 때까지 **블로킹**하므로, 블로그 수집(페이지 N장 × HTTP 지연)에서는
+브라우저가 십수 초 동안 아무것도 보여줄 수 없다. 그래서 UI 는 작업을 시작해 두고 상태를 폴링한다.
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant B as "Browser (app.js)"
+  participant W as "webapp.py"
+  participant T as "worker thread"
+  participant C as "crawl (chain/blog)"
+  participant G as "crawl/progress.py"
+
+  B->>W: GET /api/search/start?q=&source=
+  W->>W: _SearchJob 생성 → 레지스트리 등록
+  W->>T: Thread(_run_search_job).start()
+  W-->>B: 202 {job_id, state:"running", steps:[]}
+  loop 400ms
+    B->>W: GET /api/search/job?id=<job_id>
+    W-->>B: 200 {state, elapsed_ms, steps[], progress{percent}}
+  end
+  T->>C: search_hits(q, source)
+  C->>G: report("후보 6건에서 가사를 확인합니다", done=0, total=4)
+  G->>W: sink(update) → job.steps 에 기록
+  C-->>T: list[RawSong]
+  T->>W: job.state = "done", results 기록
+  B->>W: GET /api/search/job?id=<job_id>
+  W-->>B: 200 {state:"done", results:[...]}
+```
+
+- 진행 문자열은 **수집기만** 만든다(`crawl.progress.report`). 퍼센트는 `done`/`total` 을 실제로 아는 단계만
+  싣고, 모르면 UI 가 흐르는 막대(indeterminate)로 대신한다 — 없는 숫자를 지어내지 않는다.
+- 싱크는 **스레드별**이다(`ThreadingHTTPServer` 는 요청마다 스레드). 작업이 끝나면 `set_sink(None)`.
+- 단발 `/api/search` 는 그대로 남는다(스크립트·테스트의 계약).
+- 작업은 프로세스 메모리이며 나이(10분)·개수(32)로 정리된다. 클라이언트가 폴링을 멈춰도 서버는 새지 않는다.
 
 ## 7. 시퀀스 다이어그램 — 오류 경로 (오류→메시지 단일 지점)
 

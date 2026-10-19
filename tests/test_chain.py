@@ -5,6 +5,8 @@ from __future__ import annotations
 import unittest
 from unittest import mock
 
+from lyrics2pptx import config
+from lyrics2pptx.crawl import progress
 from lyrics2pptx.crawl.base import (
     RawSong,
     SourceBlockedError,
@@ -101,3 +103,31 @@ class ChainTests(unittest.TestCase):
 
     def test_source_name_is_auto(self) -> None:
         self.assertEqual(ChainSource().name, "auto")
+
+    def test_chain_reports_which_member_is_being_tried(self) -> None:
+        # The web UI reads these lines; a silent chain means a frozen bar.
+        self.lrclib = FakeSource("lrclib", error=SourceNotFoundError("no"))
+        self.blog = FakeSource("blog", songs=HIT)
+        self.sources.update({"lrclib": self.lrclib, "blog": self.blog})
+        seen: list = []
+        progress.set_sink(seen.append)
+        self.addCleanup(progress.set_sink, None)
+        with _resolve(self.sources):
+            ChainSource().search("생명샘")
+        self.assertEqual(
+            [update.message for update in seen],
+            ["lrclib 소스 조회 중…", "blog 소스 조회 중…", "blog 에서 1건 찾음"],
+        )
+        # 체인은 퍼센트를 지어내지 않는다: 실제 총량은 수집기만 안다.
+        self.assertEqual([update.percent for update in seen], [None, None, None])
+
+    def test_a_single_member_chain_does_not_announce_itself(self) -> None:
+        # ``blog``/``lrclib`` used directly must not say "1개 중 1개"; only the
+        # collector's own lines are interesting there.
+        self.sources = {"lrclib": FakeSource("lrclib", songs=HIT)}
+        seen: list = []
+        progress.set_sink(seen.append)
+        self.addCleanup(progress.set_sink, None)
+        with _resolve(self.sources), mock.patch.object(config, "CHAIN_MEMBERS", ("lrclib",)):
+            ChainSource().search("생명샘")
+        self.assertEqual([update.message for update in seen], ["lrclib 에서 1건 찾음"])

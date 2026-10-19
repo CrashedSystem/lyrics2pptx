@@ -48,6 +48,8 @@ for noisy in ("pptx", "PIL", "lxml"): logging.getLogger(noisy).setLevel(logging.
 | HTTP 접근 로그 | `lyrics2pptx.webapp` | INFO | `%s %s -> %d %.0fms` (method path status dur) | 요청 본문 |
 | 처리되지 않은 예외 | `lyrics2pptx.webapp` | ERROR | `unhandled error path=%s` + `logging.exception` | 응답 본문에는 미포함 |
 | 사용자 오류 응답 | `lyrics2pptx.webapp` | WARNING | `error code=%s status=%d` | 스택트레이스(별도 ERROR 로만) |
+| 검색 작업 종료 | `lyrics2pptx.webapp` | INFO | `search job id=%s state=%s steps=%d` | 가사 본문 |
+| 검색 진행 상황 | `crawl.progress` | (로그 아님) | 싱크로 전달되는 표시용 문자열 — `job.steps` 에만 쌓이고 로그로는 남기지 않는다 | 가사 본문(진행 문구는 호스트명/건수만) |
 | 검색어/가사 본문 | 어디든 | DEBUG | 60자 truncate, prefix `q=` | INFO 이상 금지 |
 
 **원칙**: INFO 는 "운영자가 봐야 하는 사건", WARNING 은 "복구했지만 주목할 사건", ERROR 는 "사용자에게 실패를 반환한 사건".

@@ -93,7 +93,24 @@
     </section>
 
     <p id="error" class="error" role="alert" hidden></p>
-    <p id="status" class="status" role="status" hidden></p>
+
+    <div id="progress" class="progress" role="status" aria-live="polite" hidden>
+      <div class="progress-head">
+        <span id="progress-label" class="progress-label">가사를 찾는 중…</span>
+        <span id="progress-time" class="progress-time">0.0초</span>
+      </div>
+      <div
+        id="progress-track"
+        class="progress-track"
+        role="progressbar"
+        aria-label="진행률"
+        aria-valuemin="0"
+        aria-valuemax="100"
+      >
+        <div id="progress-fill" class="progress-fill"></div>
+      </div>
+      <ol id="progress-steps" class="progress-steps"></ol>
+    </div>
   </main>
 
   <footer class="app-footer">

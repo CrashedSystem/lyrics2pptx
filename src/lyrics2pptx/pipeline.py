@@ -20,6 +20,7 @@ from .crawl import (
     available_sources,
     get_source,
 )
+from .crawl import progress as crawl_progress
 from .errors import (
     ConfigError,
     EmptyLyricsError,
@@ -44,6 +45,7 @@ __all__ = [
     "search_hits",
     "search_songs",
     "cross_check",
+    "set_progress_sink",
     "resolve_slide_index",
     "describe_error",
     "resolve_output_path",
@@ -147,6 +149,17 @@ _SEARCH_CACHE: dict[tuple[str, str, int], tuple[RawSong, ...]] = {}
 def clear_search_cache() -> None:
     """Drop cached search results (used by tests and by ``--doctor``)."""
     _SEARCH_CACHE.clear()
+
+
+def set_progress_sink(sink) -> None:
+    """Install (or clear) the per-thread collect-progress sink for callers.
+
+    The collectors publish short lines through :mod:`lyrics2pptx.crawl.progress`
+    while a search runs; the web UI turns them into a progress bar. Entrypoints
+    pass a callable here (and ``None`` when the request ends) so that ``crawl``
+    never has to know who is watching.
+    """
+    crawl_progress.set_sink(sink)
 
 
 def _message_for(code: str, exc: BaseException) -> str:

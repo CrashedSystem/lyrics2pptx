@@ -13,6 +13,7 @@ import json
 import logging
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -370,6 +371,153 @@ class SlideIndexEndpointTests(WebAppTestCase):
         )
         self.assertEqual(status, 400)
         self.assertEqual(json.loads(body)["error"]["code"], "BAD_REQUEST")
+
+
+class SearchJobHelpers:
+    """Shared polling helper for the job endpoints."""
+
+    def wait_for_job(self, job_id: str, *, tries: int = 200) -> dict:
+        for _ in range(tries):
+            status, _, body = self.get(f"/api/search/job?id={job_id}")
+            self.assertEqual(status, 200)
+            snapshot = json.loads(body)
+            if snapshot["state"] != "running":
+                return snapshot
+            time.sleep(0.05)
+        self.fail("job did not finish in time")
+
+
+class SearchJobEndpointTests(SearchJobHelpers, WebAppTestCase):
+    """/api/search/start + /api/search/job against the fixture corpus."""
+
+    FIXTURE_MODE = True
+
+    def test_start_returns_a_job_snapshot(self) -> None:
+        status, headers, body = self.get(f"/api/search/start?q={quote('생명샘')}")
+        self.assertEqual(status, 202)
+        self.assertIn("application/json", headers["content-type"])
+        payload = json.loads(body)
+        self.assertTrue(payload["job_id"])
+        self.assertIn(payload["state"], {"running", "done"})
+        self.assertIsInstance(payload["steps"], list)
+        self.assertIsInstance(payload["elapsed_ms"], int)
+        self.assertGreaterEqual(payload["elapsed_ms"], 0)
+
+    def test_job_publishes_the_same_results_as_the_one_shot_endpoint(self) -> None:
+        _, _, body = self.get(f"/api/search/start?q={quote('생명샘')}")
+        snapshot = self.wait_for_job(json.loads(body)["job_id"])
+        self.assertEqual(snapshot["state"], "done")
+        self.assertTrue(snapshot["results"])
+        self.assertIn("title", snapshot["results"][0])
+
+    def test_empty_query_is_rejected_before_any_work_starts(self) -> None:
+        for path in (
+            "/api/search/start?q=",
+            "/api/search/start",
+            "/api/search/start?q=%20%20",
+        ):
+            with self.subTest(path=path):
+                status, _, body = self.get(path)
+                self.assertEqual(status, 400)
+                self.assertEqual(json.loads(body)["error"]["code"], "BAD_REQUEST")
+
+    def test_unknown_job_id_is_404(self) -> None:
+        status, _, body = self.get("/api/search/job?id=deadbeef")
+        self.assertEqual(status, 404)
+        self.assertEqual(json.loads(body)["error"]["code"], "NOT_FOUND")
+
+    def test_unknown_source_surfaces_as_the_job_error(self) -> None:
+        _, _, body = self.get("/api/search/start?q=abc&source=nope")
+        snapshot = self.wait_for_job(json.loads(body)["job_id"])
+        self.assertEqual(snapshot["state"], "error")
+        self.assertEqual(snapshot["error"]["code"], "BAD_REQUEST")
+        self.assertNotIn("results", snapshot)
+
+
+class SearchJobProgressTests(SearchJobHelpers, WebAppTestCase):
+    """The collectors' progress lines reach the polled snapshot."""
+
+    def _run_job(self, patcher) -> dict:
+        """Start a job and poll it to completion with ``patcher`` still active.
+
+        The patch must outlive the poll: ``/api/search/start`` returns as soon as
+        the worker thread is spawned, so restoring the real collector early would
+        let the worker call it instead of the fake.
+        """
+        with patcher:
+            status, _, body = self.get("/api/search/start?q=x")
+            self.assertEqual(status, 202)
+            return self.wait_for_job(json.loads(body)["job_id"])
+
+    def test_reported_lines_and_numbers_are_published(self) -> None:
+        from lyrics2pptx.crawl import progress as crawl_progress
+
+        def fake_search_hits(query, *, source=None, limit=5):
+            crawl_progress.report("첫 단계")
+            crawl_progress.report("가사 페이지 확인 중…", done=2, total=4)
+            return []
+
+        snapshot = self._run_job(
+            mock.patch.object(pipeline, "search_hits", side_effect=fake_search_hits)
+        )
+        self.assertEqual(snapshot["state"], "done")
+        self.assertEqual(
+            [step["message"] for step in snapshot["steps"]],
+            ["첫 단계", "가사 페이지 확인 중…"],
+        )
+        self.assertEqual(snapshot["progress"]["percent"], 50)
+        self.assertEqual(snapshot["progress"]["done"], 2)
+        self.assertEqual(snapshot["progress"]["total"], 4)
+
+    def test_a_line_without_numbers_stays_indeterminate(self) -> None:
+        from lyrics2pptx.crawl import progress as crawl_progress
+
+        def fake_search_hits(query, *, source=None, limit=5):
+            crawl_progress.report("블로그 검색 중…")
+            return []
+
+        snapshot = self._run_job(
+            mock.patch.object(pipeline, "search_hits", side_effect=fake_search_hits)
+        )
+        self.assertEqual([step["message"] for step in snapshot["steps"]], ["블로그 검색 중…"])
+        self.assertNotIn("percent", snapshot["steps"][0])
+
+    def test_repeated_identical_lines_do_not_pile_up(self) -> None:
+        from lyrics2pptx.crawl import progress as crawl_progress
+
+        def fake_search_hits(query, *, source=None, limit=5):
+            for _ in range(5):
+                crawl_progress.report("같은 줄")
+            crawl_progress.report("같은 줄", done=1, total=2)
+            return []
+
+        snapshot = self._run_job(
+            mock.patch.object(pipeline, "search_hits", side_effect=fake_search_hits)
+        )
+        self.assertEqual([step["message"] for step in snapshot["steps"]], ["같은 줄"])
+        self.assertEqual(snapshot["progress"]["percent"], 50)
+
+    def test_the_worker_thread_gets_its_own_sink(self) -> None:
+        from lyrics2pptx.crawl import progress as crawl_progress
+
+        seen: list = []
+
+        def fake_search_hits(query, *, source=None, limit=5):
+            # The web app installs the sink for the worker thread before calling.
+            seen.append(crawl_progress.current_sink())
+            return []
+
+        self._run_job(mock.patch.object(pipeline, "search_hits", side_effect=fake_search_hits))
+        self.assertEqual(len(seen), 1)
+        self.assertIsNotNone(seen[0])
+
+    def test_a_failing_collect_becomes_an_error_without_leaking_details(self) -> None:
+        snapshot = self._run_job(
+            mock.patch.object(pipeline, "search_hits", side_effect=RuntimeError("boom"))
+        )
+        self.assertEqual(snapshot["state"], "error")
+        self.assertEqual(snapshot["error"]["code"], "INTERNAL")
+        self.assertNotIn("boom", json.dumps(snapshot))
 
 
 if __name__ == "__main__":

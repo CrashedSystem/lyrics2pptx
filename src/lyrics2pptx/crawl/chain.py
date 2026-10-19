@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 
 from .. import config
+from . import progress
 from .base import (
     RawSong,
     SourceBlockedError,
@@ -39,7 +40,15 @@ class ChainSource:
         from . import get_source
 
         errors: list[SourceError] = []
-        for member in config.CHAIN_MEMBERS:
+        members = tuple(config.CHAIN_MEMBERS)
+        for member in members:
+            # The UI shows which member is being tried; a chain of one (the
+            # explicit ``lrclib``/``blog`` sources) does not announce itself, and
+            # the chain never publishes a percentage — only the collector that
+            # knows the real page count may do that (an invented number is worse
+            # than a sweeping bar).
+            if len(members) > 1:
+                progress.report(f"{member} 소스 조회 중…")
             try:
                 songs = get_source(member).search(query, limit=limit)
             except SourceError as exc:
@@ -50,6 +59,7 @@ class ChainSource:
                 continue
             if songs:
                 log.info("chain member=%s hits=%d", member, len(songs))
+                progress.report(f"{member} 에서 {len(songs)}건 찾음")
                 return list(songs)
             errors.append(SourceNotFoundError(f"{member}: 검색 결과가 없습니다"))
 

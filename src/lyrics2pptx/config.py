@@ -140,8 +140,9 @@ FIXTURE_DIR = _env_path("LYRICS2PPTX_FIXTURE_DIR", ROOT / "tests" / "fixtures") 
 ) else None
 
 DEFAULT_FILENAME = _env_str("LYRICS2PPTX_DEFAULT_FILENAME", "가사.pptx")
-# ADR-018: ``auto`` = fallback chain. lrclib answers fast and structurally when
-# it has the song; only a miss falls through to the web-search collector.
+# ADR-018/ADR-025: ``auto`` asks these members **concurrently** and then ranks
+# the answers (checked blog consensus > lrclib > unchecked blog). The order of
+# this tuple no longer decides anything — it only names the members.
 DEFAULT_SOURCE = _env_str("LYRICS2PPTX_SOURCE", "auto")
 CHAIN_MEMBERS = ("lrclib", "blog")
 SEARCH_BACKEND = _env_str_choice("LYRICS2PPTX_SEARCH_BACKEND", "ddg", ("ddg",))

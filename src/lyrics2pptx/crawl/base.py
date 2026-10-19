@@ -31,6 +31,10 @@ class RawSong:
     lyrics: str  # as returned by the source, not normalized; may be empty
     source_name: str  # e.g. "lyrics_ovh"
     source_url: str | None = None
+    #: ``True`` when a blog consensus passed cross-validation, ``False`` when it
+    #: did not, ``None`` for candidates without a vote (ADR-025). The chain uses
+    #: it to put a checked consensus ahead of an unchecked one.
+    cross_checked: bool | None = None
 
 
 class SourceError(Lyrics2PptxError):

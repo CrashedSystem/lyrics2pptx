@@ -483,6 +483,9 @@ class BlogLyricsSource:
                 lyrics="\n".join(consensus.lines),
                 source_name=self.name,
                 source_url=transcripts[0].url,
+                # ADR-025: the chain needs to know whether this consensus was
+                # cross-checked before it can rank it against lrclib.
+                cross_checked=consensus.cross_checked,
             )
         ]
         for item in transcripts:

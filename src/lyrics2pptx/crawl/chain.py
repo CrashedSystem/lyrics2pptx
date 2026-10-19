@@ -1,19 +1,35 @@
-"""Fallback chain collector (L3).
+"""Priority chain collector (L3): blog consensus > lrclib > unconfirmed blog.
 
-``auto`` is the default source: it asks each member in order and returns the
-first non-empty result set. Ordering matters — ``lrclib`` is a fast structured
-JSON API, so a normal query never pays for the slower web search; only a query
-that lrclib cannot serve falls through to ``blog`` (ADR-018).
+``auto`` is the default source. Its priority is a three-tier rule, not a member
+order (ADR-025):
 
-Error policy: if any member *definitively* found nothing, that verdict wins over
-a transient failure of another member, because "검색 결과가 없습니다 → 직접
-붙여넣기" is the actionable message. Only when every member failed for a
-non-``not found`` reason is that failure propagated.
+1. a blog consensus that passed cross-validation — two or more independent
+   pages agreed, so the text has been checked against something;
+2. ``lrclib`` — structured and fast, but its ranking is not trustworthy: a
+   query shortened to one token can return an unrelated song, and the adapter
+   auto-selects hit 0 (조사보고서 §16.5, five of twenty-one songs);
+3. a blog consensus nobody could confirm (one page).
+
+Language comes before the tiers (ADR-026): candidates whose lyrics are Korean
+are considered first, so an English original cannot win over an available
+Korean version. Only when no Korean candidate exists does the same tier rule
+apply to foreign-language candidates.
+
+Both members are queried *concurrently*. Cross-validation needs the blog crawl
+even when lrclib could answer, so a sequential chain would add the whole crawl
+to every query; in parallel the query costs the slower of the two.
+
+Error policy (unchanged, ADR-018): a member that *definitively* found nothing
+decides the user-facing error, because "검색 결과가 없습니다 → 직접 붙여넣기" is
+the actionable message. A transient failure is only propagated when nobody
+found anything.
 """
 
 from __future__ import annotations
 
 import logging
+import re
+from concurrent.futures import ThreadPoolExecutor
 
 from .. import config
 from . import progress
@@ -29,9 +45,27 @@ __all__ = ["ChainSource"]
 
 log = logging.getLogger(__name__)
 
+_HANGUL_RE = re.compile(r"[가-힣]")
+
+#: Tier labels (ADR-025). ``blog`` appears twice on purpose: a cross-checked
+#: consensus and an unconfirmed one are different evidence, not different pages.
+_TIER_CHECKED = "blog 교차검증"
+_TIER_LRCLIB = "lrclib"
+_TIER_UNCHECKED = "blog 미검증"
+
+
+def _is_korean(songs: list[RawSong]) -> bool:
+    """True when most lines of the leading candidate carry Hangul (ADR-026)."""
+    lyrics = songs[0].lyrics if songs else ""
+    lines = [line for line in lyrics.splitlines() if line.strip()]
+    if not lines:
+        return False
+    korean = sum(1 for line in lines if _HANGUL_RE.search(line))
+    return korean * 2 > len(lines)
+
 
 class ChainSource:
-    """Try ``config.CHAIN_MEMBERS`` in order; first non-empty answer wins."""
+    """Ask the configured members concurrently, then pick by ADR-025's tiers."""
 
     name = "auto"
 
@@ -39,32 +73,95 @@ class ChainSource:
         # Deferred import: the registry imports this module.
         from . import get_source
 
-        errors: list[SourceError] = []
         members = tuple(config.CHAIN_MEMBERS)
-        for member in members:
-            # The UI shows which member is being tried; a chain of one (the
-            # explicit ``lrclib``/``blog`` sources) does not announce itself, and
-            # the chain never publishes a percentage — only the collector that
-            # knows the real page count may do that (an invented number is worse
-            # than a sweeping bar).
-            if len(members) > 1:
-                progress.report(f"{member} 소스 조회 중…")
-            try:
-                songs = get_source(member).search(query, limit=limit)
-            except SourceError as exc:
-                log.info(
-                    "chain member=%s failed=%s", member, type(exc).__name__
-                )
-                errors.append(exc)
-                continue
-            if songs:
-                log.info("chain member=%s hits=%d", member, len(songs))
-                progress.report(f"{member} 에서 {len(songs)}건 찾음")
-                return list(songs)
-            errors.append(SourceNotFoundError(f"{member}: 검색 결과가 없습니다"))
+        # The UI shows which members are being asked; a chain of one (the
+        # explicit ``lrclib``/``blog`` sources) does not announce itself, and the
+        # chain never publishes a percentage — only the collector that knows the
+        # real page count may do that (an invented number is worse than a
+        # sweeping bar).
+        if len(members) > 1:
+            progress.report(f"{'·'.join(members)} 소스 동시 조회 중…")
+        answers = self._ask(members, get_source, query, limit)
 
-        for exc_type in (SourceNotFoundError, SourceBlockedError, SourceUnavailableError):
+        chosen = self._choose(answers)
+        if chosen is not None:
+            label, member, songs = chosen
+            for other, (candidate, _error) in answers.items():
+                if other != member and candidate:
+                    log.info(
+                        "chain skipped member=%s hits=%d picked=%s",
+                        other,
+                        len(candidate),
+                        label,
+                    )
+            log.info(
+                "chain picked=%s tier=%s hits=%d korean=%s",
+                member,
+                label,
+                len(songs),
+                _is_korean(songs),
+            )
+            progress.report(f"{label} — 후보 {len(songs)}건")
+            return list(songs)
+
+        errors = [error for _songs, error in answers.values() if error is not None]
+        for exc_type in (
+            SourceNotFoundError,
+            SourceBlockedError,
+            SourceUnavailableError,
+        ):
             for exc in errors:
                 if isinstance(exc, exc_type):
                     raise exc
         raise SourceNotFoundError(f"'{query}' 검색 결과가 없습니다")
+
+    def _ask(
+        self,
+        members: tuple[str, ...],
+        get_source,
+        query: str,
+        limit: int,
+    ) -> dict[str, tuple[list[RawSong], SourceError | None]]:
+        """Query every member in parallel; return ``{name: (songs, error)}``."""
+        answers: dict[str, tuple[list[RawSong], SourceError | None]] = {}
+
+        def ask(member: str) -> None:
+            try:
+                songs = list(get_source(member).search(query, limit=limit))
+            except SourceError as exc:
+                answers[member] = ([], exc)
+                return
+            answers[member] = (songs, None)
+
+        # One worker per member: the collectors are network-bound and know
+        # nothing about each other, so a pool this small is the whole change.
+        with ThreadPoolExecutor(max_workers=max(1, len(members))) as pool:
+            list(pool.map(ask, members))
+        return answers
+
+    def _choose(
+        self,
+        answers: dict[str, tuple[list[RawSong], SourceError | None]],
+    ) -> tuple[str, str, list[RawSong]] | None:
+        """Return ``(label, member, songs)`` for the winning tier, or ``None``."""
+        for korean in (True, False):
+            group = {
+                name: songs
+                for name, (songs, _error) in answers.items()
+                if songs and _is_korean(songs) is korean
+            }
+            if not group:
+                continue
+            blog = group.get("blog")
+            if blog and blog[0].cross_checked:
+                return _TIER_CHECKED, "blog", blog
+            if group.get("lrclib"):
+                return _TIER_LRCLIB, "lrclib", group["lrclib"]
+            if blog:
+                return _TIER_UNCHECKED, "blog", blog
+            # A member this file does not know about (config-driven): keep it
+            # usable instead of hiding a hit.
+            for name in answers:
+                if name in group:
+                    return name, name, group[name]
+        return None

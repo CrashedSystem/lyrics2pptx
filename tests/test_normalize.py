@@ -110,6 +110,59 @@ class TrailingMarkerTests(unittest.TestCase):
         self.assertEqual(normalize_lines("a\n-----\nb"), ["a", "b"])
 
 
+class AdLibTests(unittest.TestCase):
+    """N11: 성능 추임새는 가사가 아니다 (ADR-022).
+
+    lrclib's 「아주 먼 옛날」 starts with its own ad-lib line and hangs more of
+    them off real lines: a whole slide was ``(Yeah, woah, yeah)``, and
+    ``(Woah)``/``(Ooh)`` were printed on the slides beside the words. Removing
+    them also repairs the two-line pairing, because the ad-lib line no longer
+    eats one of the two slots.
+    """
+
+    def test_a_whole_line_of_ad_lib_is_dropped(self) -> None:
+        text = "아주 먼 옛날 하늘에서는\n(Yeah, woah, yeah)\n당신을 향한 계획있었죠"
+        self.assertEqual(
+            normalize_lines(text), ["아주 먼 옛날 하늘에서는", "당신을 향한 계획있었죠"]
+        )
+
+    def test_an_inline_ad_lib_is_removed_from_the_line(self) -> None:
+        self.assertEqual(
+            normalize_lines("나의 손으로 창조하였노라 (Woah)"), ["나의 손으로 창조하였노라"]
+        )
+        self.assertEqual(normalize_lines("사랑을 드려요 (Ooh)"), ["사랑을 드려요"])
+
+    def test_a_trailing_interjection_after_hangul_is_removed(self) -> None:
+        self.assertEqual(
+            normalize_lines("하나님께서 바라보시며 oh"), ["하나님께서 바라보시며"]
+        )
+
+    def test_an_english_line_is_never_touched(self) -> None:
+        for line in ("Oh yeah", "Oh yeah, hold me now", "Na na na na na na"):
+            with self.subTest(line=line):
+                self.assertEqual(normalize_lines(line), [line])
+
+    def test_a_bracket_of_real_words_survives(self) -> None:
+        for line in ("사랑해요 (사랑해요 영원히)", "귀하게 (hold me now)", "주께 (주여)"):
+            with self.subTest(line=line):
+                self.assertEqual(normalize_lines(line), [line])
+
+    def test_an_empty_bracket_is_decoration(self) -> None:
+        self.assertEqual(normalize_lines("나의 가는 길 (...)"), ["나의 가는 길"])
+        self.assertEqual(normalize_lines("(...)"), [])
+        self.assertEqual(normalize_lines("나는 ( )"), ["나는"])
+
+    def test_a_marker_is_still_a_marker_not_an_ad_lib(self) -> None:
+        # N6 owns these; N11 must not need to see them.
+        self.assertEqual(normalize_lines("(x2)\n사랑해요"), ["사랑해요"])
+
+    def test_ad_lib_removal_keeps_the_line_count_for_pairing(self) -> None:
+        text = "(Yeah, woah, yeah)\n아주 먼 옛날 하늘에서는\n당신을 향한 계획있었죠"
+        self.assertEqual(
+            normalize_lines(text), ["아주 먼 옛날 하늘에서는", "당신을 향한 계획있었죠"]
+        )
+
+
 class GoldenAndContractTests(unittest.TestCase):
     def test_golden_fixture_matches_documented_four_lines(self) -> None:
         raw = (FIXTURES / "lyrics_sample.txt").read_text(encoding="utf-8")

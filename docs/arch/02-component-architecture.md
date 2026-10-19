@@ -36,7 +36,7 @@ L4 는 아무도 import 하지 않는다. L4 → L4 금지 (`cli` ↔ `webapp` �
 | `crawl/websearch/__init__.py` | L3 | 검색 백엔드 레지스트리(`ddg` 만), `get_backend` | 사이트별 수집 |
 | `crawl/chain.py` | L3 | `auto` 폴백 체인(lrclib → blog) + 오류 우선순위 | 개별 소스 내부 로직 |
 | `crawl/__init__.py` | L3 | `SOURCES` 레지스트리, `get_source(name)` | 파싱 로직 |
-| `text/normalize.py` | L2 | `str` → `list[str]` (N1~N10) | 슬라이드 페어링, pptx 접근 |
+| `text/normalize.py` | L2 | `str` → `list[str]` (N1~N11) | 슬라이드 페어링, pptx 접근 |
 | `text/split.py` | L2 | `list[str]` → `list[LinePair]` | pptx 접근, 파일 I/O |
 | `pptx/template_reader.py` | L2 | 템플릿 1회 분석(template profile), 배경 풀, 슬라이드별 스타일 캐시 | 슬라이드 생성/저장 |
 | `pptx/clone.py` | L2 | 슬라이드 1장 복제 + rels 재매핑 | 텍스트 내용 결정, 배경 선택 |

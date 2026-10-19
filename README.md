@@ -5,7 +5,7 @@
 서버·클라우드·계정이 필요 없고, 실행은 Windows 로컬 프로세스 하나와 로컬 웹서버(127.0.0.1)뿐이다.
 템플릿은 **읽기 전용 입력**으로만 열리며 절대 수정되지 않는다.
 
-> 상태: `src/`+`web/` 구현 완료. 테스트 `459 tests OK`. 진입점 `python -m lyrics2pptx.cli` / `python -m lyrics2pptx.webapp` / 더블클릭 `lyrics2pptx.vbs`. 기본 수집 소스는 `auto`(lrclib → 블로그 교차검증, ADR-018).
+> 상태: `src/`+`web/` 구현 완료. 테스트 `467 tests OK`. 진입점 `python -m lyrics2pptx.cli` / `python -m lyrics2pptx.webapp` / 더블클릭 `lyrics2pptx.vbs`. 기본 수집 소스는 `auto`(lrclib → 블로그 교차검증, ADR-018).
 
 ---
 
@@ -72,7 +72,7 @@ Windows 한국어 콘솔(cp949)에서는 위 명령의 한글이 깨질 수 있�
 | 옵션 | 설명 |
 | --- | --- |
 | `--query "…"` | 검색어. `"아티스트 - 곡명"` 또는 곡명 단독 |
-| `--input-file PATH` | 직접 입력 텍스트(UTF-8). 정규화(N1~N10) 적용 |
+| `--input-file PATH` | 직접 입력 텍스트(UTF-8). 정규화(N1~N11, 추임새 제거 포함) 적용 |
 | `--lines-file PATH` | 이미 정리된 줄 파일(한 줄 = 한 문장). 정규화 생략 |
 | `-o`, `--output PATH` | 출력 경로 (기본 `output\<제목>.pptx`) |
 | `--source NAME` | 수집 소스 이름: `auto`(기본)·`blog`·`lrclib`·`lyrics_ovh` |
@@ -227,7 +227,7 @@ lyrics/
                            blog, crosscheck, chain, websearch/{base,ddg})
     text/                  정규화/2줄 분할 (normalize, split)
     pptx/                  템플릿 읽기·복제·채우기·쓰기 (writer*, builder, clone, fill…)
-  tests/                   459 tests (표준 unittest)
+  tests/                   467 tests (표준 unittest)
   docs/plan/ docs/arch/     설계 문서 · docs/guide/ 사용가이드 · docs/adr/ 결정 기록
 ```
 
@@ -239,8 +239,8 @@ lyrics/
 python -m unittest discover -s tests -t .
 ```
 
-검증된 결과(실제 실행): `Ran 459 tests … OK`, exit 0. 네트워크 실호출 0회이며 collect 단계는
-fixture/mock 으로 격리된다. `.\scripts\run.ps1 -Test` 도 동일하게 459 tests / OK / exit 0.
+검증된 결과(실제 실행): `Ran 467 tests … OK`, exit 0. 네트워크 실호출 0회이며 collect 단계는
+fixture/mock 으로 격리된다. `.\scripts\run.ps1 -Test` 도 동일하게 467 tests / OK / exit 0.
 
 정적 게이트:
 

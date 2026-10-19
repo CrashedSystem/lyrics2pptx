@@ -16,7 +16,7 @@
 
 | 레이어 | 파일 | 대상 | 네트워크 |
 | --- | --- | --- | --- |
-| 단위 | `test_normalize.py` | 정규화 N1~N10 | 없음 |
+| 단위 | `test_normalize.py` | 정규화 N1~N11 | 없음 |
 | 단위 | `test_split.py` | 2줄 분할, 홀수/0줄/후렴 | 없음 |
 | 단위 | `test_httputil.py` | 지연/재시도/robots/UA | 없음(모킹) |
 | 통합 | `test_clone.py` | 슬라이드 복제 + rels | 없음(로컬 템플릿) |

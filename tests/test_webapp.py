@@ -11,6 +11,7 @@ from __future__ import annotations
 import http.client
 import json
 import logging
+import sys
 import tempfile
 import threading
 import time
@@ -801,6 +802,131 @@ class RevealTests(WebAppTestCase):
                 self._post_reveal("가사.pptx", origin="http://evil.example")[0], 403
             )
         reveal.assert_not_called()
+
+
+class LaunchTests(WebAppTestCase):
+    """ADR-033: the packaged exe reuses a live server, or starts one and opens a tab."""
+
+    def _write_state(self, *, port, instance: str) -> None:
+        config.webui_state_path().write_text(
+            f"# 손으로 쓴 상태 파일\ninstance={instance}\nport={port}\n", encoding="utf-8"
+        )
+
+    def test_the_state_file_reads_back_as_key_value_pairs(self) -> None:
+        webapp.write_state(self.server)
+        values = webapp.read_state()
+        self.assertEqual(values["port"], str(self.port))
+        self.assertEqual(values["instance"], self.server.session.instance)
+
+    def test_a_missing_state_file_reads_as_empty(self) -> None:
+        self.assertEqual(webapp.read_state(), {})
+
+    def test_a_live_server_is_reused(self) -> None:
+        webapp.write_state(self.server)
+        self.assertEqual(webapp.reuse_url(), f"http://127.0.0.1:{self.port}/")
+
+    def test_a_dead_port_is_not_reused(self) -> None:
+        # 포트 1 은 아무도 듣지 않는다 — 파일만 보고 믿으면 안 된다.
+        self._write_state(port=1, instance="deadbeefdeadbeef")
+        self.assertEqual(webapp.reuse_url(timeout=0.5), "")
+
+    def test_a_server_that_is_not_ours_is_not_reused(self) -> None:
+        # 살아 있는 포트지만 인스턴스가 다르다 = 남의 서버(포트 재사용).
+        self._write_state(port=self.port, instance="deadbeefdeadbeef")
+        self.assertEqual(webapp.reuse_url(), "")
+
+    def test_a_broken_state_file_is_not_reused(self) -> None:
+        self._write_state(port="팔칠육오", instance="")
+        self.assertEqual(webapp.reuse_url(), "")
+
+    def test_launch_opens_the_running_server_instead_of_a_second_one(self) -> None:
+        with (
+            mock.patch.object(webapp, "reuse_url", return_value="http://127.0.0.1:9/"),
+            mock.patch.object(webapp, "_open_browser") as opened,
+            mock.patch.object(webapp, "main") as started,
+        ):
+            self.assertEqual(webapp.launch(), 0)
+        opened.assert_called_once_with("http://127.0.0.1:9/")
+        started.assert_not_called()
+
+    def test_launch_starts_a_server_and_opens_the_tab_when_none_is_running(self) -> None:
+        with (
+            mock.patch.object(webapp, "reuse_url", return_value=""),
+            mock.patch.object(webapp, "main", return_value=7) as started,
+        ):
+            self.assertEqual(webapp.launch(), 7)
+        started.assert_called_once_with(None, open_browser=True)
+
+    def test_a_browser_that_refuses_to_open_is_only_a_warning(self) -> None:
+        with mock.patch.object(webapp.webbrowser, "open", return_value=False):
+            self.assertFalse(webapp._open_browser("http://127.0.0.1:9/"))
+
+    def test_a_browser_that_raises_is_only_a_warning(self) -> None:
+        with mock.patch.object(webapp.webbrowser, "open", side_effect=OSError("no browser")):
+            self.assertFalse(webapp._open_browser("http://127.0.0.1:9/"))
+
+
+class PackagedLogTests(unittest.TestCase):
+    """ADR-033: a packaged run has no console, so both streams go to ``output/launch.log``."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self._out, self._err = sys.stdout, sys.stderr
+        self.addCleanup(self._restore_streams)
+        for patcher in (
+            mock.patch.object(config, "OUTPUT_DIR", Path(self._tmp.name)),
+            mock.patch.object(sys, "frozen", True, create=True),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def _restore_streams(self) -> None:
+        sys.stdout, sys.stderr = self._out, self._err
+
+    def test_the_log_is_written_next_to_the_output_folder(self) -> None:
+        webapp._redirect_launch_log()
+        stream = sys.stderr
+        try:
+            target = Path(self._tmp.name) / "launch.log"
+            self.assertTrue(target.is_file())
+            self.assertIs(sys.stdout, stream)
+            self.assertIs(sys.stderr, stream)
+            print("무슨 일이 있었는지", file=stream)
+        finally:
+            self._restore_streams()
+            stream.close()
+        self.assertIn("무슨 일이 있었는지", target.read_text(encoding="utf-8"))
+
+    def test_a_developer_run_keeps_its_console(self) -> None:
+        with mock.patch.object(sys, "frozen", False, create=True):
+            webapp._redirect_launch_log()
+        self.assertIs(sys.stderr, self._err)
+        self.assertFalse((Path(self._tmp.name) / "launch.log").exists())
+
+    def test_a_second_launch_does_not_erase_the_running_log(self) -> None:
+        # exe 를 두 번 누르면 두 번째 실행이 첫 실행(서버)의 기록을 지우면 안 된다.
+        target = Path(self._tmp.name) / "launch.log"
+        target.write_text("첫 실행의 기록\n", encoding="utf-8")
+        webapp._redirect_launch_log()
+        stream = sys.stderr
+        try:
+            self.assertIn("첫 실행의 기록", target.read_text(encoding="utf-8"))
+        finally:
+            self._restore_streams()
+            stream.close()
+
+    def test_a_grown_log_is_moved_aside(self) -> None:
+        target = Path(self._tmp.name) / "launch.log"
+        target.write_text("x" * (webapp._LAUNCH_LOG_MAX_BYTES + 1), encoding="utf-8")
+        webapp._redirect_launch_log()
+        stream = sys.stderr
+        try:
+            self.assertTrue((Path(self._tmp.name) / "launch.log.old").is_file())
+            self.assertLess(target.stat().st_size, 1000)
+        finally:
+            self._restore_streams()
+            stream.close()
 
 
 if __name__ == "__main__":

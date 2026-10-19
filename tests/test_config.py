@@ -8,14 +8,57 @@ happens to export, except ``LYRICS2PPTX_FIXTURE_DIR`` which is never asserted.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+import subprocess
+import sys
 import unittest
 from pathlib import Path
 from unittest import mock
 
 from lyrics2pptx import config
 from lyrics2pptx.errors import ConfigError
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+#: Where PyInstaller unpacks the read-only part of the bundle in a real exe.
+_FROZEN_BUNDLE = "lyrics2pptx-bundle"
+
+#: Child-interpreter probe: fake what PyInstaller sets, *then* import config.
+_FROZEN_PROBE = (
+    "import json, sys\n"
+    "sys.frozen = True\n"
+    f"sys._MEIPASS = {_FROZEN_BUNDLE!r}\n"
+    "from lyrics2pptx import config\n"
+    "print(json.dumps({\n"
+    "    'root': str(config.ROOT),\n"
+    "    'template': str(config.TEMPLATE_PATH),\n"
+    "    'output': str(config.OUTPUT_DIR),\n"
+    "    'web': str(config.WEB_DIR),\n"
+    "}, ensure_ascii=False))\n"
+)
+
+
+def _clean_env() -> dict[str, str]:
+    """A child environment with no ``LYRICS2PPTX_*`` override and ``src`` importable."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith("LYRICS2PPTX_")}
+    env["PYTHONPATH"] = str(REPO_ROOT / "src")
+    return env
+
+
+def _frozen_layout() -> dict[str, str]:
+    proc = subprocess.run(
+        [sys.executable, "-c", _FROZEN_PROBE],
+        cwd=str(REPO_ROOT),
+        env=_clean_env(),
+        capture_output=True,
+        timeout=120,
+        check=False,
+    )
+    if proc.returncode != 0:
+        raise AssertionError(proc.stderr.decode("utf-8", "replace"))
+    return json.loads(proc.stdout.decode("utf-8"))
 
 
 class DefaultsTests(unittest.TestCase):
@@ -244,6 +287,46 @@ class UnknownEnvTests(unittest.TestCase):
     def test_lrclib_timeout_is_a_known_variable(self) -> None:
         with mock.patch.dict(os.environ, {"LYRICS2PPTX_LRCLIB_TIMEOUT": "5"}):
             self.assertNotIn("LYRICS2PPTX_LRCLIB_TIMEOUT", config.unknown_env_keys())
+
+
+class FrozenLayoutTests(unittest.TestCase):
+    """ADR-033: in a packaged run the *exe folder* is the root, ``web/`` ships inside.
+
+    ``sys.frozen`` cannot be faked in this process without clobbering the module
+    the rest of the suite imported, so the probe runs a child interpreter that
+    fakes the attributes PyInstaller sets *before* importing ``config``.
+    """
+
+    layout: dict[str, str] = {}
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.layout = _frozen_layout()
+
+    def test_the_exe_folder_is_the_root(self) -> None:
+        root = Path(self.layout["root"])
+        self.assertEqual(root, Path(sys.executable).resolve().parent)
+        # The user must be able to see the template and the result next to the exe.
+        self.assertEqual(self.layout["template"], str(root / "template.pptx"))
+        self.assertEqual(self.layout["output"], str(root / "output"))
+
+    def test_the_web_assets_are_read_from_inside_the_bundle(self) -> None:
+        self.assertEqual(self.layout["web"], str(Path(_FROZEN_BUNDLE) / "web"))
+
+    def test_an_environment_override_still_wins_when_frozen(self) -> None:
+        env = _clean_env()
+        env["LYRICS2PPTX_TEMPLATE"] = "other.pptx"
+        proc = subprocess.run(
+            [sys.executable, "-c", _FROZEN_PROBE],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            timeout=120,
+            check=False,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr.decode("utf-8", "replace"))
+        layout = json.loads(proc.stdout.decode("utf-8"))
+        self.assertEqual(layout["template"], str(Path(self.layout["root"]) / "other.pptx"))
 
 
 if __name__ == "__main__":

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 from pathlib import Path
 
 from .errors import ConfigError
@@ -60,8 +61,18 @@ __all__ = [
 
 _log = logging.getLogger(__name__)
 
-# Repository root: <repo>/src/lyrics2pptx/config.py -> parents[2] == <repo>
-ROOT = Path(__file__).resolve().parents[2]
+# The folder the *user* sees: a developer checkout, or — in a packaged run —
+# the folder ``lyrics2pptx.exe`` was unzipped into. ``template.pptx`` is read
+# from there and ``output/`` is written there, so a packaged user can find the
+# result without knowing anything about the program (ADR-033).
+if getattr(sys, "frozen", False):
+    ROOT = Path(sys.executable).resolve().parent
+    # Assets that ship *inside* the exe (``web/``) are unpacked per run here.
+    _BUNDLE_ROOT = Path(getattr(sys, "_MEIPASS", ROOT))
+else:
+    # Repository root: <repo>/src/lyrics2pptx/config.py -> parents[2] == <repo>
+    ROOT = Path(__file__).resolve().parents[2]
+    _BUNDLE_ROOT = ROOT
 
 # Constants that are not environment-driven but are shared across layers.
 NORM_AUTOFIT = True
@@ -140,7 +151,7 @@ def _env_str_choice(name: str, default: str, choices: tuple[str, ...]) -> str:
 
 TEMPLATE_PATH = _env_path("LYRICS2PPTX_TEMPLATE", ROOT / "template.pptx")
 OUTPUT_DIR = _env_path("LYRICS2PPTX_OUTPUT_DIR", ROOT / "output")
-WEB_DIR = _env_path("LYRICS2PPTX_WEB_DIR", ROOT / "web")
+WEB_DIR = _env_path("LYRICS2PPTX_WEB_DIR", _BUNDLE_ROOT / "web")
 FIXTURE_DIR = _env_path("LYRICS2PPTX_FIXTURE_DIR", ROOT / "tests" / "fixtures") if (
     os.environ.get("LYRICS2PPTX_FIXTURE_DIR", "").strip()
 ) else None

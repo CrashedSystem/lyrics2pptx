@@ -23,6 +23,11 @@ the watchdog stops the process after ``config.WEBUI_TAB_GRACE`` (tab gone),
 ``/api/shutdown`` (the in-page "종료" button) is guarded by a per-process token,
 so a random web page cannot kill the user's server with a cross-site POST.
 
+``launch`` is the same server seen from the *packaged* side (ADR-033): the
+double-clicked ``lyrics2pptx.exe`` has no console and no launcher script, so the
+"reuse a live instance, otherwise start one and open the tab" dance the ``.vbs``
+performs lives here as ``reuse_url`` + ``launch``.
+
 Security boundary (docs/arch/06 §3): bound to ``127.0.0.1``, static serving is
 containment-checked against ``web/``, and request bodies are capped at
 ``config.REQUEST_MAX_BYTES``. Builds are serialized by one global lock because
@@ -41,6 +46,8 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.request
+import webbrowser
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -59,13 +66,23 @@ __all__ = [
     "Session",
     "build_server",
     "clear_state",
+    "launch",
     "main",
+    "read_state",
+    "reuse_url",
     "start_watchdog",
     "write_state",
 ]
 
 # One build at a time: the template and output directory are process-wide.
 _BUILD_LOCK = threading.Lock()
+
+# ADR-033: the packaged exe has no console, so ``launch`` sends both streams here
+# (next to ``output/``-relative artifacts, where a user can find them).
+_LAUNCH_LOG_NAME = "launch.log"
+#: Rotate once it passes this size: one run writes a few dozen lines, so a
+#: megabyte is months of history — and the file must never grow forever.
+_LAUNCH_LOG_MAX_BYTES = 1_048_576
 
 _PPTX_CONTENT_TYPE = (
     "application/vnd.openxmlformats-officedocument.presentationml.presentation"
@@ -980,6 +997,118 @@ def clear_state(instance: str) -> None:
         log.warning("실행 상태 파일을 지우지 못했습니다 (%s): %s", target, exc)
 
 
+def read_state() -> dict[str, str]:
+    """Return ``config.WEBUI_STATE_FILE`` as a dict (``{}`` when unreadable).
+
+    Same ``key=value`` format ``write_state`` writes and ``lyrics2pptx.vbs``
+    parses; kept deliberately dumb so all three readers agree.
+    """
+    try:
+        text = config.webui_state_path().read_text(encoding="utf-8")
+    except OSError:
+        return {}
+    values: dict[str, str] = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        values[key.strip()] = value.strip()
+    return values
+
+
+def reuse_url(timeout: float = 1.5) -> str:
+    """URL of a *live* lyrics2pptx server, or ``""`` when there is none.
+
+    The state file alone proves nothing: the process may be gone and the port
+    may since have been taken by something else entirely. So the instance id in
+    the file has to answer on ``/api/ping`` before we send the user to it. The
+    address is rebuilt on ``127.0.0.1`` rather than trusted from the file, so a
+    hand-edited state file cannot point the launcher at another host.
+    """
+    values = read_state()
+    port, instance = values.get("port", ""), values.get("instance", "")
+    if not port.isdigit() or not instance:
+        return ""
+    url = f"http://127.0.0.1:{port}/"
+    request = urllib.request.Request(
+        f"{url}api/ping", headers={"User-Agent": config.DEFAULT_UA}
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            payload = json.loads(response.read().decode("utf-8", "replace"))
+    except (OSError, ValueError):
+        return ""  # refused, timed out, or not our JSON at all
+    if not isinstance(payload, dict) or payload.get("instance") != instance:
+        return ""
+    return url
+
+
+def _open_browser(url: str) -> bool:
+    """Open the user's default browser; never let this fail the server."""
+    try:
+        opened = webbrowser.open(url)
+    except Exception as exc:  # noqa: BLE001 - webbrowser may raise anything
+        log.warning("브라우저를 열지 못했습니다 (%s): %s", type(exc).__name__, exc)
+        return False
+    if not opened:
+        log.warning("브라우저를 열지 못했습니다. 주소를 직접 열어 주세요: %s", url)
+    return bool(opened)
+
+
+def _rotate_launch_log(target: Path) -> None:
+    """Keep ``launch.log`` short by moving a grown file aside (best effort)."""
+    try:
+        if target.is_file() and target.stat().st_size > _LAUNCH_LOG_MAX_BYTES:
+            target.replace(target.with_name(target.name + ".old"))
+    except OSError:
+        pass  # another run holds it — appending is always better than losing it
+
+
+def _redirect_launch_log() -> None:
+    """Send stdout/stderr to ``output/launch.log`` in a packaged run (ADR-033).
+
+    A packaged ``lyrics2pptx.exe`` is built without a console, so a traceback
+    would otherwise vanish; this file is the one thing the user can send us when
+    something goes wrong. Developer runs (``python -m lyrics2pptx.webapp``) keep
+    their console.
+
+    The file is opened in **append** mode on purpose: double-clicking the exe
+    while it is already running must not truncate the log of the server that is
+    still writing to it (that is exactly the "opened it twice" case).
+    """
+    if not getattr(sys, "frozen", False):
+        return
+    target = config.OUTPUT_DIR / _LAUNCH_LOG_NAME
+    try:
+        config.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        _rotate_launch_log(target)
+        stream = target.open("a", encoding="utf-8", buffering=1)
+        stream.write(f"\n=== {datetime.now().isoformat(timespec='seconds')} 실행 ===\n")
+    except OSError as exc:  # pragma: no cover - unwritable folder
+        log.warning("실행 기록을 남기지 못했습니다: %s", exc)
+        return
+    sys.stdout = stream
+    sys.stderr = stream
+
+
+def launch(argv: list[str] | None = None) -> int:
+    """Entry point of the packaged app: one double-click, no console (ADR-033).
+
+    This is the packaged twin of ``lyrics2pptx.vbs``: reuse the running server
+    when there is one (the user double-clicked twice, or a window is still
+    open), otherwise start the server and open the tab. There is no separate
+    "start" step and no separate "stop" step — the rules of ADR-032 retire it.
+    """
+    _redirect_launch_log()
+    running = reuse_url()
+    if running:
+        log.info("이미 실행 중인 서버를 엽니다 → %s", running)
+        _open_browser(running)
+        return 0
+    return main(argv, open_browser=True)
+
+
 def _setup_logging() -> None:
     logging.basicConfig(
         level=config.LOG_LEVEL_OBJ,
@@ -991,8 +1120,14 @@ def _setup_logging() -> None:
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
 
-def main(argv: list[str] | None = None) -> int:
-    """Start the local web server and serve until it retires itself (ADR-032)."""
+def main(argv: list[str] | None = None, *, open_browser: bool = False) -> int:
+    """Start the local web server and serve until it retires itself (ADR-032).
+
+    ``open_browser`` is set by ``launch`` (ADR-033) so a double-clicked exe
+    reaches the UI without the user typing a URL. It is opened only *after* the
+    socket is accepting, and a browser that refuses to open is a warning, never
+    a crash.
+    """
     _setup_logging()
     unknown = config.unknown_env_keys()
     if unknown:
@@ -1023,6 +1158,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     serving.start()
     start_watchdog(server)
+    if open_browser:
+        # The port is already listening (``build_server`` bound it), so the tab
+        # cannot race us into a "connection refused".
+        _open_browser(f"http://{host}:{port}/")
     try:
         while serving.is_alive():
             serving.join(timeout=1.0)

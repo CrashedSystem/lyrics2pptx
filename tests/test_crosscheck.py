@@ -201,3 +201,95 @@ class EvidenceTests(unittest.TestCase):
         padded = Transcript("c", SONG + ("이 줄은 한 곳에만 있습니다",))
         consensus = cross_check([Transcript("a", SONG), Transcript("b", SONG), padded])
         self.assertNotIn("이 줄은 한 곳에만 있습니다", consensus.lines)
+
+
+#: The twelve lines every publisher prints for "실로암" (지니 · 마커스워십,
+#: 신상근 작사·작곡). The *recording* repeats the block; the pages differ in how
+#: many times they copy it out.
+SILOAM = (
+    "어두운 밤에 캄캄한 밤에",
+    "새벽을 찾아 떠난다",
+    "종이 울리고 닭이 울어도",
+    "내 눈에는 오직 밤이었소",
+    "우리가 처음 만난 그때는",
+    "차가운 새벽이었소",
+    "주님 맘속에 사랑 있음을",
+    "나는 느낄 수가 있었소",
+    "오 주여 당신께 감사하리라",
+    "실로암 내게 주심을",
+    "나에게 영원한 사랑 속에서",
+    "떠나지 않게 하소서",
+)
+
+#: The block three times: lyrics.co.kr printed it that way.
+REPEATED = SILOAM * 3
+
+#: Two lyric lines to a paragraph, plus the page's own heading: the shape
+#: chistopher77.com used, which was the medoid of the five live pages.
+MERGED = ("📝실로 찬양 가사",) + tuple(
+    " ".join(SILOAM[index : index + 2]) for index in range(0, len(SILOAM), 2)
+)
+
+
+class ReferenceShapeTests(unittest.TestCase):
+    """The consensus follows the page that prints the song once (ADR-023).
+
+    Live, the "실로암" vote kept the merged seven-line sheet-music page and threw
+    away the four real transcriptions. That page was the medoid, and the length
+    guard measured every other page against *its* average line length (26.2
+    against 11.5-12.2: ratios 0.44-0.46), so pages whose content similarity to it
+    was 0.34-0.92 were dropped. The deck was four slides led by the page's own
+    heading ``📝실로 찬양 가사``.
+    """
+
+    def test_a_paragraph_merging_page_does_not_anchor_the_vote(self) -> None:
+        consensus = cross_check(
+            [
+                Transcript("sheet", MERGED, "https://sheet.example/1"),
+                Transcript("repeated", REPEATED),
+                Transcript("once", SILOAM),
+            ]
+        )
+        self.assertEqual(consensus.lines, SILOAM)
+        self.assertEqual(consensus.source_count, 2)
+        self.assertEqual(consensus.pages_seen, 3)
+        self.assertIn("https://sheet.example/1", consensus.dropped)
+        self.assertNotIn("📝실로 찬양 가사", consensus.lines)
+
+    def test_the_reference_prints_the_song_once(self) -> None:
+        consensus = cross_check([Transcript("a", REPEATED), Transcript("b", SILOAM)])
+        self.assertEqual(consensus.lines, SILOAM)
+        self.assertTrue(consensus.cross_checked)
+
+    def test_a_chorus_only_fragment_does_not_anchor(self) -> None:
+        consensus = cross_check(
+            [
+                Transcript("fragment", SILOAM[8:]),
+                Transcript("once", SILOAM),
+                Transcript("twice", SILOAM * 2),
+            ]
+        )
+        self.assertEqual(consensus.lines, SILOAM)
+
+    def test_a_hard_wrapped_lyric_line_does_not_win_the_shape(self) -> None:
+        """Report §12.4: one site split a lyric line in two with ``<br>``.
+
+        The complete first line is then carried by the two other pages only, so
+        the reference must not be the page that spells the song in more lines —
+        that is how the live vote moved the majority's complete line to the end
+        of the deck as a stray "extra".
+        """
+        split = ("어두운 밤에", "캄캄한 밤에") + SILOAM[1:]
+        spaced = tuple(
+            "주님 맘 속에 사랑 있음을" if line == "주님 맘속에 사랑 있음을" else line
+            for line in SILOAM
+        )
+        consensus = cross_check(
+            [
+                Transcript("split", split),
+                Transcript("once", SILOAM),
+                Transcript("other", spaced),
+            ]
+        )
+        self.assertEqual(consensus.lines, SILOAM)
+        self.assertEqual(consensus.source_count, 3)

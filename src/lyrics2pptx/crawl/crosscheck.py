@@ -26,9 +26,10 @@ line independently against every other transcript:
   what makes "에스길"↔"에스겔" and "환난날이"↔"환란 날이" comparable;
 * order is irrelevant, so reordered verses still vote correctly.
 
-The reference is the *medoid* transcript (the one most similar to all others),
-so the consensus keeps the line shape most publishers use. A transcript that is
-not the same song (an unrelated search hit, or a page whose "lyrics" are an
+The reference is the transcript that prints the song once, wrapped the way the
+majority wraps it (see :func:`_reference_index`), so the consensus keeps the
+line shape most publishers use instead of one page's layout. A transcript that
+is not the same song (an unrelated search hit, or a page whose "lyrics" are an
 image and whose menu was scraped) is dropped before voting.
 
 Dropping pages is not the same thing as agreement, and the two are easy to
@@ -69,6 +70,17 @@ MIN_SOURCE_COUNT = 2
 MATCH_RATIO = 0.75
 
 _SHINGLE = 5
+
+#: How far a page's average line length may sit from the majority's (the median
+#: across the offered transcriptions) before it is a different *shape*: a page
+#: that merges lyric lines into paragraphs, or breaks them one word per line,
+#: writes positions nobody else votes for.
+_LENGTH_WINDOW = (0.6, 1.7)
+
+#: The reference must carry at least this share of the richest page's text
+#: (character shingles) before it may define the shape of the deck: a
+#: chorus-only fragment must not become the lyrics.
+_MIN_COVERAGE = 0.5
 
 # Zero-width characters and exotic spaces would otherwise split a key that is
 # the same word (a mirror that HTML-escaped a soft hyphen, say).
@@ -228,36 +240,116 @@ def _average_line_length(transcript: Transcript) -> float:
     return sum(len(line) for line in transcript.lines) / len(transcript.lines)
 
 
+def _median(values: Sequence[float]) -> float:
+    """Median of ``values`` (0.0 when empty); even counts average the halves."""
+    ordered = sorted(values)
+    if not ordered:
+        return 0.0
+    middle = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[middle]
+    return (ordered[middle - 1] + ordered[middle]) / 2
+
+
+def _reference_index(
+    transcripts: Sequence[Transcript], matrix: Sequence[Sequence[float]]
+) -> int:
+    """Index of the transcript whose line shape the consensus should follow.
+
+    The medoid alone is a poor anchor (ADR-023). Live, the "실로암" vote put a
+    seven-line sheet-music page first: it merged two lyric lines into one
+    paragraph, so it overlapped with everybody and won the centrality tie by a
+    hair. The consensus then inherited its shape, and the length guard — which
+    compared every other page to *that* page's average line length — threw the
+    four real transcriptions away (similarity 0.34-0.92 to the anchor, average
+    line length 0.44 of it). The deck was four slides led by the page's own
+    heading ``📝실로 찬양 가사``.
+
+    The anchor is the page that
+
+    * **carries the song**: at least :data:`_MIN_COVERAGE` of the richest
+      page's shingles, when at least one page qualifies — otherwise a page that
+      transcribed only the chorus could anchor;
+    * **wraps like the majority**: average line length inside
+      :data:`_LENGTH_WINDOW` of the median, when at least one page qualifies —
+      otherwise a page that merges lyric lines into paragraphs could anchor;
+    * **spells the song in the fewest lines**: both ways a page inflates the
+      deck add lines — printing the verse+chorus block five times, and
+      hard-wrapping one lyric line into two. The page that prints the song once
+      and in the publishers' own wrapping wins (report §12.4, ADR-023).
+
+    Ties go to the page closest to the centre of the vote, so the shape does not
+    depend on the order the pages arrived in.
+    """
+    if len(transcripts) <= 1:
+        return 0
+    eligible = list(range(len(transcripts)))
+    richest = max(len(_shingles(item.lines)) for item in transcripts)
+    if richest:
+        covering = [
+            index
+            for index in eligible
+            if len(_shingles(transcripts[index].lines)) >= _MIN_COVERAGE * richest
+        ]
+        if covering:
+            eligible = covering
+    lengths = [_average_line_length(item) for item in transcripts]
+    typical = _median([length for length in lengths if length])
+    if typical:
+        wrapped = [
+            index
+            for index in eligible
+            if _LENGTH_WINDOW[0] <= lengths[index] / typical <= _LENGTH_WINDOW[1]
+        ]
+        if wrapped:
+            eligible = wrapped
+    centre = {
+        index: sum(matrix[index][other] for other in eligible) for index in eligible
+    }
+    return min(
+        eligible, key=lambda index: (len(transcripts[index].lines), -centre[index])
+    )
+
+
 def _keep_consistent(
     transcripts: Sequence[Transcript], *, min_similarity: float
 ) -> list[Transcript]:
     """Keep the coherent cluster; drop pages that are not this song.
 
     A search result can be an unrelated song, a menu-only page (lyrics published
-    as an image) or the same song under a wildly different arrangement. Such a
-    page would otherwise inject lines the majority never saw. The medoid
-    transcript anchors the cluster and every transcript below ``min_similarity``
-    (Jaccard over shingles) is dropped.
+    as an image) or the same song wrapped in a layout nobody else uses. Such a
+    page would otherwise inject positions the majority never saw.
 
-    A transcript whose average line length is far from the medoid's is dropped
-    too: a site that puts two lyric lines in one paragraph otherwise contributes
-    nothing but noise.
+    The cluster is anchored by the medoid *among the pages that wrap like the
+    majority* (average line length within :data:`_LENGTH_WINDOW` of the median),
+    so a paragraph-merging page can neither anchor the cluster nor, by anchoring
+    it, disqualify everybody else: every page below ``min_similarity`` (Jaccard
+    over shingles) to that anchor is dropped, and so is every page whose average
+    line length is outside the window. Anchoring on the raw medoid instead is
+    what made the "실로암" vote keep one page and drop four (ADR-023).
     """
     if len(transcripts) < 2 or min_similarity <= 0:
         return list(transcripts)
 
     matrix = _similarity_matrix(transcripts)
-    medoid = max(range(len(transcripts)), key=lambda index: sum(matrix[index]))
-    reference_length = _average_line_length(transcripts[medoid])
+    lengths = [_average_line_length(item) for item in transcripts]
+    typical = _median([length for length in lengths if length])
+    wrapped = [
+        index
+        for index, length in enumerate(lengths)
+        if not typical or _LENGTH_WINDOW[0] <= length / typical <= _LENGTH_WINDOW[1]
+    ]
+    if not wrapped:  # every page wraps unlike every other: keep them all
+        wrapped = list(range(len(transcripts)))
+    anchor = wrapped[_medoid_index([transcripts[index] for index in wrapped])]
     kept: list[Transcript] = []
     for index, item in enumerate(transcripts):
-        if index == medoid:
+        if index == anchor:
             kept.append(item)
             continue
-        if matrix[index][medoid] < min_similarity:
+        if index not in wrapped:
             continue
-        length = _average_line_length(item)
-        if reference_length and not 0.6 <= length / reference_length <= 1.7:
+        if matrix[index][anchor] < min_similarity:
             continue
         kept.append(item)
     return kept
@@ -349,7 +441,7 @@ def cross_check(
     if not cleaned:
         return Consensus(entries=(), source_count=0, pages_seen=0)
 
-    # The medoid is picked by similarity, and ties fall to the first transcript,
+    # The anchor is picked by similarity, and ties fall to the first transcript,
     # so the input order must not decide the vote: two runs over the same pages
     # otherwise return different lyrics (ADR-020).
     cleaned.sort(key=lambda item: (item.source, item.url or ""))
@@ -363,7 +455,7 @@ def cross_check(
         for item in offered
         if (item.source, item.url) not in kept
     )
-    reference = cleaned[_medoid_index(cleaned)]
+    reference = cleaned[_reference_index(cleaned, _similarity_matrix(cleaned))]
     reference_keys = [line_key(line) for line in reference.lines]
 
     entries: list[LineConsensus] = []

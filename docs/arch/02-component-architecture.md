@@ -31,7 +31,7 @@ L4 는 아무도 import 하지 않는다. L4 → L4 금지 (`cli` ↔ `webapp` �
 | `crawl/progress.py` | L1 | 수집 진행 상황 문자열의 스레드별 싱크(`report`/`set_sink`) — UI 표시 전용 | 수집 로직, 네트워크, 퍼센트 계산(총량은 수집기가 준다) |
 | `crawl/<site>.py` | L2 | 특정 소스 → `RawSong` 매핑 | 규칙 우회(직접 `urllib` 호출 금지), 파일 저장, 정규화 |
 | `crawl/blog.py` | L2 | 검색 결과 페이지에서 사이트 특정 셀렉터 없이 가사 런 추출 → 페이지별 전사본. **페이지 성립 가드**(chrome/머리말/절 번호/길이 상한/사이트 카운터)와 후보 라벨(`호스트 · N줄`, 투표에서 빠지면 `(투표 제외)`) | 검색 색인 자체(백엔드에 위임), `text` 의존(규칙 P4) |
-| `crawl/crosscheck.py` | L2 | 여러 전사본의 줄별 다수결(`Transcript`/`Consensus`), 순서 무관 최선매칭, **합의 성립 조건**(`MIN_SOURCE_COUNT`·`cross_checked`·`pages_seen`) | 네트워크, 파일 I/O, `text` 의존 |
+| `crawl/crosscheck.py` | L2 | 여러 전사본의 줄별 다수결(`Transcript`/`Consensus`), 순서 무관 최선매칭, **기준 전사본 선택**(노래를 한 번 인쇄한·다수와 같은 개행의 페이지, ADR-023), **합의 성립 조건**(`MIN_SOURCE_COUNT`·`cross_checked`·`pages_seen`) | 네트워크, 파일 I/O, `text` 의존 |
 | `crawl/websearch/ddg.py` | L2 | DuckDuckGo HTML/lite 결과 파싱(색인 전용, 스니펫은 가사 아님) | 가사 판독(결과 페이지에서 읽음), robots 우회 |
 | `crawl/websearch/__init__.py` | L3 | 검색 백엔드 레지스트리(`ddg` 만), `get_backend` | 사이트별 수집 |
 | `crawl/chain.py` | L3 | `auto` 폴백 체인(lrclib → blog) + 오류 우선순위 | 개별 소스 내부 로직 |

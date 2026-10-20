@@ -7,7 +7,7 @@
 서버·클라우드·계정이 필요 없고, 실행은 Windows 로컬 프로세스 하나와 로컬 웹서버(127.0.0.1)뿐이다.
 템플릿은 **읽기 전용 입력**으로만 열리며 절대 수정되지 않는다.
 
-> 상태: `src/`+`web/` 구현 완료. 테스트 `576 tests OK`. 진입점 `python -m lyrics2pptx.cli` / `python -m lyrics2pptx.webapp` / 더블클릭 `lyrics2pptx.vbs` / **패키지** `dist\lyrics2pptx\lyrics2pptx.exe`(ADR-033). 기본 수집 소스는 `auto`(① blog 교차검증 → ② lrclib → ③ blog 미검증, ADR-025)이고 가사는 한글 우선이다(ADR-026). 폴백 소스 lrclib 은 곡당 총 10초 안에 답하거나 포기한다(ADR-030). 웹 UI 는 서버 수명을 스스로 관리한다 — 창을 닫으면 3분, 사용이 없으면 20분, 최대 3시간(ADR-032).
+> 상태: `src/`+`web/` 구현 완료. 테스트 `596 tests OK`. 진입점 `python -m lyrics2pptx.cli` / `python -m lyrics2pptx.webapp` / 더블클릭 `lyrics2pptx.vbs` / **패키지** `dist\lyrics2pptx\lyrics2pptx.exe`(ADR-033). 기본 수집 소스는 `auto`(① blog 교차검증 → ② lrclib → ③ blog 미검증, ADR-025)이고 가사는 한글 우선이다(ADR-026). 폴백 소스 lrclib 은 곡당 총 10초 안에 답하거나 포기한다(ADR-030). 웹 UI 는 서버 수명을 스스로 관리한다 — 창을 닫으면 3분, 사용이 없으면 20분, 최대 3시간(ADR-032).
 
 ---
 
@@ -16,7 +16,7 @@
 개발자가 아니라 **쓰기만** 하는 사람에게는 이 파일 하나를 준다.
 
 ```text
-dist\lyrics2pptx-0.1.0b2-win64.zip
+dist\lyrics2pptx-0.1.0b3-win64.zip
 ```
 
 압축을 풀면 폴더 하나가 나오고 그 안에 세 개가 들어 있다.
@@ -32,17 +32,20 @@ lyrics2pptx\사용법.txt        한 장짜리 안내 — 실행·사용·종료
 - 잘 안 되면 `output\launch.log` 를 보면 된다(패키지 실행의 유일한 기록).
 - 만들려면: `python -X utf8 packaging\build.py`
 
-### 0.1 배경(template.pptx) 바꾸기 (ADR-034)
+### 0.1 배경(template.pptx) 바꾸기 (ADR-034, ADR-035)
 
 동봉 템플릿 대신 **내 PPT** 를 쓰려면, 압축을 푼 폴더의 `template.pptx` 를 내 파일로 덮어쓰면 된다. 다시 빌드할 필요가 없다.
 
 - 슬라이드 수·화면비는 자유. 배경 목록은 그 템플릿의 슬라이드 전부다.
-- 가사는 **이름이 `제목 1` 인 글상자**로 들어간다. 없으면 *글자가 있는 가장 큰 상자*를 자동으로 고른다(후보는 `output\launch.log` 의 WARNING 에 남는다).
-- 상자에 글꼴/크기 서식이 없으면 상자 높이에 맞춰 18~66pt 로 정하고 `맑은 고딕`·검정을 쓴다(`normAutofit` 이 넘침을 흡수).
+- 배경은 **슬라이드 → 레이아웃 → 마스터** 순으로 상속된다(파워포인트와 같은 규칙). 그림 배경은 원본 바이트 그대로, 단색·테마 색(`accent1` 등)·`sysClr`·`prstClr` 은 그 색으로 그려서 보여 준다.
+- 가사는 **이름이 `제목 1` 인 글상자**로 들어간다. 없으면 점수로 고른다: 제목 placeholder(+100) → 이름에 `가사`/`lyrics`(+80) → `제목`/`title`(+60) → 글자 있음(+25) → 면적. 쪽번호·날짜·바닥글 placeholder 는 제외하고, 슬라이드를 거의 덮는 도형(각 변 1% 허용)은 배경으로 본다. 후보와 점수는 `output\launch.log` 의 WARNING 에 남는다.
+- 그룹(`p:grpSp`) 안에 든 글상자도 찾고, 좌표·크기를 슬라이드 기준으로 환산한다.
+- 상자에 글꼴/크기 서식이 없으면 상자 높이×0.42(18~66pt)로 정하고, **배경이 어두우면 흰 글자**, 아니면 검정을 쓴다. 글꼴은 템플릿 테마의 동아시아 글꼴(없으면 `맑은 고딕`). `normAutofit` 이 넘침을 흡수한다.
 - 배경이 그림이 아니어도(단색) 목록에 그 색으로 뜬다.
 - 엉뚱한 상자에 들어가면 그 상자 이름을 `제목 1` 로 바꾸는 것이 가장 확실하다(`LYRICS2PPTX_TITLE_SHAPE` 로 다른 이름을 지정할 수도 있다).
+- 글자가 **표나 스마트아트 안에만** 있으면 "표·스마트아트는 지원하지 않습니다"라고 알려 준다 — 조용히 빈 슬라이드를 만들지 않는다.
 - 확인: `--doctor` 가 `title_shape` · `title_shape_detected` · `style_source` 를 출력한다.
-- 한계: 마스터/레이아웃 배경, 테마 색 배경, 스마트아트·표 안의 텍스트는 다루지 않는다.
+- 한계: 표·스마트아트 안에는 쓰지 않는다. 세로형 등 특이 화면비는 실측하지 않았다. 추정은 틀릴 수 있고, 기본 배경 번호가 범위를 넘어 고른 마지막 슬라이드에 글상자가 없으면 미리보기가 그 사실을 알린다(다른 배경을 고르면 된다).
 
 ---
 
@@ -289,7 +292,7 @@ lyrics/
                            blog, crosscheck, chain, websearch/{base,ddg})
     text/                  정규화/2줄 분할 (normalize, split)
     pptx/                  템플릿 읽기·복제·채우기·쓰기 (writer*, builder, clone, fill…)
-  tests/                   576 tests (표준 unittest)
+  tests/                   596 tests (표준 unittest)
   docs/plan/ docs/arch/     설계 문서 · docs/guide/ 사용가이드 · docs/adr/ 결정 기록
 ```
 
@@ -301,8 +304,8 @@ lyrics/
 python -m unittest discover -s tests -t .
 ```
 
-검증된 결과(실제 실행): `Ran 576 tests … OK`, exit 0. 네트워크 실호출 0회이며 collect 단계는
-fixture/mock 으로 격리된다. `.\scripts\run.ps1 -Test` 도 동일하게 576 tests / OK / exit 0.
+검증된 결과(실제 실행): `Ran 596 tests … OK`, exit 0. 네트워크 실호출 0회이며 collect 단계는
+fixture/mock 으로 격리된다. `.\scripts\run.ps1 -Test` 도 동일하게 596 tests / OK / exit 0.
 
 정적 게이트:
 

@@ -9,12 +9,15 @@ The template is read-only: this module never opens it for writing.
 
 from __future__ import annotations
 
+import colorsys
 import logging
 from dataclasses import dataclass
+from io import BytesIO
 from pathlib import Path
 from typing import Mapping
 
 from lxml import etree
+from PIL import Image, ImageColor, ImageStat
 from pptx import Presentation
 from pptx.oxml import parse_xml
 from pptx.oxml.ns import nsdecls, qn
@@ -35,6 +38,10 @@ __all__ = [
     "resolve_title_shape_element",
     "is_full_bleed_shape",
     "extract_slide_style",
+    "background_of",
+    "background_image_reference",
+    "theme_colors",
+    "resolve_color",
 ]
 
 log = logging.getLogger(__name__)
@@ -139,29 +146,39 @@ def find_title_shape_element(
     return None
 
 
+# A hand-drawn background rectangle rarely lands on the exact EMU: PowerPoint
+# keeps a few EMU of offset, or the shape is a hair smaller than the slide. Only
+# accepting an exact match made such a rectangle a *text* candidate and put the
+# lyrics inside the background (ADR-035).
+_FULL_BLEED_TOLERANCE = 0.01  # of each slide edge
+
+
+def _tolerance(edge: int) -> int:
+    return max(1270, int(edge * _FULL_BLEED_TOLERANCE))  # ≥ 0.1 pt
+
+
+def _covers_slide(
+    left: int, top: int, width: int, height: int, slide_width: int, slide_height: int
+) -> bool:
+    """True when a rectangle covers the slide within the tolerance above."""
+    tol_x = _tolerance(slide_width)
+    tol_y = _tolerance(slide_height)
+    return (
+        abs(left) <= tol_x
+        and abs(top) <= tol_y
+        and width >= slide_width - tol_x
+        and height >= slide_height - tol_y
+    )
+
+
 def is_full_bleed_shape(
     sp_element: etree._Element, slide_width: int, slide_height: int
 ) -> bool:
-    """True when an autoshape covers the whole slide (a background fill)."""
-    sp_pr = sp_element.find(qn("p:spPr"))
-    if sp_pr is None:
+    """True when an autoshape covers (almost) the whole slide (a background)."""
+    left, top, width, height = _raw_rect(sp_element)
+    if width <= 0 or height <= 0:
         return False
-    transform = sp_pr.find(qn("a:xfrm"))
-    if transform is None:
-        return False
-    offset = transform.find(qn("a:off"))
-    extent = transform.find(qn("a:ext"))
-    if offset is None or extent is None:
-        return False
-    try:
-        return (
-            int(offset.get("x")) == 0
-            and int(offset.get("y")) == 0
-            and int(extent.get("cx")) == slide_width
-            and int(extent.get("cy")) == slide_height
-        )
-    except (TypeError, ValueError):
-        return False
+    return _covers_slide(left, top, width, height, slide_width, slide_height)
 
 
 def _shape_name_of(sp_element: etree._Element) -> str:
@@ -188,17 +205,547 @@ def _shape_extent(sp_element: etree._Element) -> tuple[int, int]:
         return (0, 0)
 
 
-def _shape_offset(sp_element: etree._Element) -> tuple[int, int]:
+# ---------------------------------------------------------------- geometry
+
+def _raw_rect(sp_element: etree._Element) -> tuple[int, int, int, int]:
+    """``(left, top, width, height)`` in the shape's own coordinate system."""
     sp_pr = sp_element.find(qn("p:spPr"))
     if sp_pr is None:
-        return (0, 0)
-    offset = sp_pr.find(f"{qn('a:xfrm')}/{qn('a:off')}")
-    if offset is None:
-        return (0, 0)
+        return (0, 0, 0, 0)
+    transform = sp_pr.find(qn("a:xfrm"))
+    if transform is None:
+        return (0, 0, 0, 0)
+    offset = transform.find(qn("a:off"))
+    extent = transform.find(qn("a:ext"))
+    if offset is None or extent is None:
+        return (0, 0, 0, 0)
     try:
-        return (int(offset.get("y") or 0), int(offset.get("x") or 0))
+        return (
+            int(offset.get("x")),
+            int(offset.get("y")),
+            int(extent.get("cx")),
+            int(extent.get("cy")),
+        )
     except (TypeError, ValueError):
-        return (0, 0)
+        return (0, 0, 0, 0)
+
+
+def _group_frame(group: etree._Element) -> tuple[int, ...] | None:
+    """``(off, ext, chOff, chExt)`` of a group, as eight integers."""
+    transform = group.find(f"{qn('p:grpSpPr')}/{qn('a:xfrm')}")
+    if transform is None:
+        return None
+    offset = transform.find(qn("a:off"))
+    extent = transform.find(qn("a:ext"))
+    child_offset = transform.find(qn("a:chOff"))
+    child_extent = transform.find(qn("a:chExt"))
+    if None in (offset, extent, child_offset, child_extent):
+        return None
+    try:
+        return (
+            int(offset.get("x")),
+            int(offset.get("y")),
+            int(extent.get("cx")),
+            int(extent.get("cy")),
+            int(child_offset.get("x")),
+            int(child_offset.get("y")),
+            int(child_extent.get("cx")),
+            int(child_extent.get("cy")),
+        )
+    except (TypeError, ValueError):
+        return None
+
+
+class _Geometry:
+    """Slide-space rectangles, undoing nested group coordinate systems.
+
+    A text box inside a ``p:grpSp`` stores its ``a:xfrm`` in the group's child
+    space, so comparing it with the slide size (ranking, full-bleed test,
+    synthesized font size) was wrong before ADR-035.
+    """
+
+    def __init__(
+        self,
+        sld_element: etree._Element,
+        inherited_from: tuple[etree._Element, ...] = (),
+    ) -> None:
+        self._parents = {
+            child: parent for parent in sld_element.iter() for child in parent
+        }
+        self._inherited_from = inherited_from
+        self._cache: dict[etree._Element, tuple[int, int, int, int]] = {}
+
+    def rect(self, sp_element: etree._Element) -> tuple[int, int, int, int]:
+        cached = self._cache.get(sp_element)
+        if cached is not None:
+            return cached
+        left, top, width, height = self._rect_or_inherited(sp_element)
+        node: etree._Element = sp_element
+        while True:
+            group = self._group_of(node)
+            if group is None:
+                break
+            frame = _group_frame(group)
+            if frame is None:
+                break
+            gx, gy, gw, gh, cx, cy, cw, ch = frame
+            if cw <= 0 or ch <= 0:
+                break
+            left = gx + int(round((left - cx) * gw / cw))
+            top = gy + int(round((top - cy) * gh / ch))
+            width = int(round(width * gw / cw))
+            height = int(round(height * gh / ch))
+            node = group
+        rect = (left, top, width, height)
+        self._cache[sp_element] = rect
+        return rect
+
+    def _rect_or_inherited(
+        self, sp_element: etree._Element
+    ) -> tuple[int, int, int, int]:
+        """A placeholder without its own ``a:xfrm`` borrows the layout's box.
+
+        Real decks keep the title/body geometry on the layout or master, so the
+        slide's ``p:sp`` often has no ``a:xfrm`` at all. Treating that as a 0x0
+        rectangle made the placeholder look like an empty caption and dropped it
+        from the candidates (ADR-035).
+        """
+        rect = _raw_rect(sp_element)
+        if rect[2] > 0 and rect[3] > 0:
+            return rect
+        placeholder = sp_element.find(
+            f"{qn('p:nvSpPr')}/{qn('p:nvPr')}/{qn('p:ph')}"
+        )
+        if placeholder is None:
+            return rect
+        inherited = _inherited_placeholder_rect(
+            self._inherited_from,
+            placeholder.get("idx"),
+            (placeholder.get("type") or "obj").strip(),
+        )
+        return inherited if inherited is not None else rect
+
+    def _group_of(self, node: etree._Element) -> etree._Element | None:
+        parent = self._parents.get(node)
+        while parent is not None:
+            if parent.tag == qn("p:grpSp"):
+                return parent
+            parent = self._parents.get(parent)
+        return None
+
+
+def _inherited_placeholder_rect(
+    elements: tuple[etree._Element, ...], index: str | None, ph_type: str
+) -> tuple[int, int, int, int] | None:
+    """Box of the placeholder with the same ``idx`` (else type) in a parent part."""
+    for element in elements:
+        for candidate in element.iter(qn("p:sp")):
+            placeholder = candidate.find(
+                f"{qn('p:nvSpPr')}/{qn('p:nvPr')}/{qn('p:ph')}"
+            )
+            if placeholder is None:
+                continue
+            candidate_index = placeholder.get("idx")
+            if index is not None and candidate_index is not None:
+                same_slot = candidate_index == index
+            else:
+                same_slot = (placeholder.get("type") or "obj").strip() == ph_type
+            if not same_slot:
+                continue
+            rect = _raw_rect(candidate)
+            if rect[2] > 0 and rect[3] > 0:
+                return rect
+    return None
+
+
+def _geometry_for(slide) -> _Geometry:
+    """Slide geometry that can borrow a placeholder box from layout/master."""
+    specs = background_specs(slide)
+    elements = tuple(element for _part, element in specs)
+    return _Geometry(elements[0], elements[1:])
+
+
+# ---------------------------------------------------------------- theme colours
+
+_COLOR_TAG_NAMES = frozenset({"srgbClr", "schemeClr", "sysClr", "prstClr"})
+_THEME_RELTYPE_SUFFIX = "/theme"
+_DIAGRAM_NS = "{http://schemas.openxmlformats.org/drawingml/2006/diagram}relIds"
+
+
+def _hex_rgb(value: str | None) -> tuple[int, int, int] | None:
+    text = (value or "").strip()
+    if len(text) != 6:
+        return None
+    try:
+        return (int(text[0:2], 16), int(text[2:4], 16), int(text[4:6], 16))
+    except ValueError:
+        return None
+
+
+def _theme_element(slide) -> etree._Element | None:
+    """The theme part of the slide's master (``a:theme``), parsed once per call."""
+    try:
+        master_part = slide.slide_layout.slide_master.part
+    except AttributeError:  # pragma: no cover - python-pptx always exposes it
+        return None
+    for rel in master_part.rels.values():
+        if rel.reltype.endswith(_THEME_RELTYPE_SUFFIX) and not rel.is_external:
+            try:
+                return etree.fromstring(rel.target_part.blob)
+            except etree.XMLSyntaxError:  # pragma: no cover - OPC validates XML
+                return None
+    return None
+
+
+def theme_colors(slide) -> dict[str, tuple[int, int, int]]:
+    """``a:clrScheme`` of the slide's theme, as ``name -> RGB``.
+
+    ``tx1``/``bg1``/``tx2``/``bg2`` are Office aliases of ``dk1``/``lt1``/``dk2``/
+    ``lt2``; both spellings are returned so a ``schemeClr`` resolves either way.
+    """
+    theme = _theme_element(slide)
+    if theme is None:  # pragma: no cover - every presentation has a theme
+        return {}
+    scheme = theme.find(f".//{qn('a:clrScheme')}")
+    if scheme is None:  # pragma: no cover
+        return {}
+    colors: dict[str, tuple[int, int, int]] = {}
+    for entry in scheme:
+        color = entry[0] if len(entry) else None
+        if color is None:
+            continue
+        name = etree.QName(color).localname
+        if name == "srgbClr":
+            rgb = _hex_rgb(color.get("val"))
+        elif name == "sysClr":
+            rgb = _hex_rgb(color.get("lastClr"))
+        else:  # pragma: no cover - clrScheme stores srgbClr or sysClr
+            rgb = None
+        if rgb is not None:
+            colors[etree.QName(entry).localname] = rgb
+    for alias, target in (("tx1", "dk1"), ("bg1", "lt1"), ("tx2", "dk2"), ("bg2", "lt2")):
+        if target in colors:
+            colors.setdefault(alias, colors[target])
+    return colors
+
+
+def _luminance(rgb: tuple[int, int, int]) -> float:
+    """Relative luminance (WCAG), 0.0 = black, 1.0 = white."""
+
+    def channel(value: int) -> float:
+        ratio = value / 255
+        return ratio / 12.92 if ratio <= 0.03928 else ((ratio + 0.055) / 1.055) ** 2.4
+
+    red, green, blue = (channel(value) for value in rgb)
+    return 0.2126 * red + 0.7152 * green + 0.0722 * blue
+
+
+def _apply_color_transforms(
+    rgb: tuple[int, int, int], color_element: etree._Element
+) -> tuple[int, int, int]:
+    """Apply ``tint``/``shade``/``lumMod``/``lumOff``/``alpha`` children in order."""
+    red, green, blue = rgb
+    for modifier in color_element:
+        tag = etree.QName(modifier).localname
+        raw = modifier.get("val")
+        if raw is None:
+            continue
+        try:
+            ratio = int(raw) / 100000.0
+        except ValueError:
+            continue
+        if tag == "tint":  # towards white; 100000 = unchanged
+            red = round(red * ratio + 255 * (1 - ratio))
+            green = round(green * ratio + 255 * (1 - ratio))
+            blue = round(blue * ratio + 255 * (1 - ratio))
+        elif tag == "shade":  # towards black; 100000 = unchanged
+            red, green, blue = round(red * ratio), round(green * ratio), round(blue * ratio)
+        elif tag in ("lumMod", "lumOff"):
+            hue, lightness, saturation = colorsys.rgb_to_hls(
+                red / 255, green / 255, blue / 255
+            )
+            lightness = (
+                lightness * ratio if tag == "lumMod" else lightness + ratio
+            )
+            red, green, blue = (
+                round(value * 255)
+                for value in colorsys.hls_to_rgb(
+                    hue, min(max(lightness, 0.0), 1.0), saturation
+                )
+            )
+        elif tag == "alpha":  # a background is composited over white
+            red = round(red * ratio + 255 * (1 - ratio))
+            green = round(green * ratio + 255 * (1 - ratio))
+            blue = round(blue * ratio + 255 * (1 - ratio))
+        red, green, blue = (min(max(value, 0), 255) for value in (red, green, blue))
+    return (red, green, blue)
+
+
+def resolve_color(
+    color_element: etree._Element | None,
+    theme: Mapping[str, tuple[int, int, int]],
+) -> tuple[int, int, int] | None:
+    """Resolve one ``a:*Clr`` element (with its modifiers) to RGB, or ``None``."""
+    if color_element is None:
+        return None
+    name = etree.QName(color_element).localname
+    if name == "srgbClr":
+        rgb = _hex_rgb(color_element.get("val"))
+    elif name == "sysClr":
+        rgb = _hex_rgb(color_element.get("lastClr"))
+        if rgb is None:
+            rgb = {
+                "window": (255, 255, 255),
+                "windowText": (0, 0, 0),
+            }.get((color_element.get("val") or "").strip())
+    elif name == "schemeClr":
+        rgb = theme.get((color_element.get("val") or "").strip())
+    elif name == "prstClr":
+        try:
+            rgb = tuple(
+                ImageColor.getrgb((color_element.get("val") or "").strip())[:3]
+            )
+        except (ValueError, TypeError):
+            rgb = None
+    else:  # pragma: no cover - callers only pass known colour elements
+        rgb = None
+    if rgb is None:
+        return None
+    return _apply_color_transforms(rgb, color_element)
+
+
+# ---------------------------------------------------------------- background
+
+def _background_element(element: etree._Element) -> etree._Element | None:
+    return element.find(f"{qn('p:cSld')}/{qn('p:bg')}")
+
+
+def _first_color_node(element: etree._Element) -> etree._Element | None:
+    for node in element.iter():
+        if etree.QName(node).localname in _COLOR_TAG_NAMES:
+            return node
+    return None
+
+
+def _background_color_node(element: etree._Element) -> etree._Element | None:
+    background = _background_element(element)
+    if background is None:
+        return None
+    for tag in (qn("p:bgPr"), qn("p:bgRef")):
+        node = background.find(tag)
+        if node is None:
+            continue
+        color = _first_color_node(node)
+        if color is not None:
+            return color
+    return None
+
+
+def _background_image_reference(element: etree._Element) -> str | None:
+    background = _background_element(element)
+    if background is None:
+        return None
+    for blip in background.iter(qn("a:blip")):
+        reference = blip.get(qn("r:embed")) or blip.get(qn("r:link"))
+        if reference:
+            return reference
+    return None
+
+
+def _full_bleed_image_reference(
+    element: etree._Element, slide_width: int, slide_height: int
+) -> str | None:
+    """Picture that acts as the background of this part.
+
+    A full-bleed picture wins; if none is exactly full-bleed (a hand-drawn
+    design often is not), the largest picture is used, which is what the UI
+    showed before ADR-035.
+    """
+    best: tuple[int, int, str] | None = None  # (is_full_bleed, area, rel)
+    for picture in element.iter(qn("p:pic")):
+        left, top, width, height = _raw_rect(picture)
+        full_bleed = 1 if _covers_slide(
+            left, top, width, height, slide_width, slide_height
+        ) else 0
+        for blip in picture.iter(qn("a:blip")):
+            reference = blip.get(qn("r:embed")) or blip.get(qn("r:link"))
+            if not reference:
+                continue
+            candidate = (full_bleed, width * height, reference)
+            if best is None or candidate[:2] > best[:2]:
+                best = candidate
+            break
+    for shape in element.iter(qn("p:sp")):
+        if not is_full_bleed_shape(shape, slide_width, slide_height):
+            continue
+        sp_pr = shape.find(qn("p:spPr"))
+        if sp_pr is None or sp_pr.find(qn("a:blipFill")) is None:
+            continue
+        for blip in sp_pr.iter(qn("a:blip")):
+            reference = blip.get(qn("r:embed")) or blip.get(qn("r:link"))
+            if reference:
+                return reference
+    return best[2] if best is not None else None
+
+
+def background_image_reference(
+    element: etree._Element, slide_width: int, slide_height: int
+) -> str | None:
+    """Image ``r:embed``/``r:link`` that paints this part's background, if any."""
+    return _background_image_reference(element) or _full_bleed_image_reference(
+        element, slide_width, slide_height
+    )
+
+
+def _full_bleed_shape_color(
+    element: etree._Element,
+    theme: Mapping[str, tuple[int, int, int]],
+    slide_width: int,
+    slide_height: int,
+) -> tuple[int, int, int] | None:
+    for shape in element.iter(qn("p:sp")):
+        if not is_full_bleed_shape(shape, slide_width, slide_height):
+            continue
+        sp_pr = shape.find(qn("p:spPr"))
+        if sp_pr is None or sp_pr.find(qn("a:blipFill")) is not None:
+            continue
+        solid = sp_pr.find(qn("a:solidFill"))
+        if solid is None:
+            continue
+        rgb = resolve_color(_first_color_node(solid), theme)
+        if rgb is not None:
+            return rgb
+    return None
+
+
+def background_specs(slide) -> tuple[tuple[object, etree._Element], ...]:
+    """``(part, element)`` in OOXML inheritance order: slide → layout → master."""
+    specs: list[tuple[object, etree._Element]] = [(slide.part, slide._element)]
+    layout = getattr(slide, "slide_layout", None)
+    if layout is None:  # pragma: no cover - every slide has a layout
+        return tuple(specs)
+    specs.append((layout.part, layout._element))
+    master = getattr(layout, "slide_master", None)
+    if master is not None:
+        specs.append((master.part, master._element))
+    return tuple(specs)
+
+
+def background_of(
+    slide, slide_width: int, slide_height: int
+) -> tuple[str, object]:
+    """The slide's *effective* background, inherited like PowerPoint does.
+
+    A slide inherits its background from its layout, and the layout from its
+    master. Reading only the slide's own XML left every master-based template
+    with a blank (white) tile and black lyrics on a dark deck — the two most
+    common real-world cases after a swap (ADR-035).
+
+    Returns:
+        ``("image", (part, rel_id))``, ``("color", (r, g, b))`` or
+        ``("none", None)``. The image's relationship lives on ``part``, so the
+        caller must resolve ``rel_id`` against that part, not the slide part.
+    """
+    theme = theme_colors(slide)
+    for part, element in background_specs(slide):
+        reference = background_image_reference(element, slide_width, slide_height)
+        if reference is not None:
+            return ("image", (part, reference))
+        rgb = resolve_color(_background_color_node(element), theme)
+        if rgb is None:
+            rgb = _full_bleed_shape_color(element, theme, slide_width, slide_height)
+        if rgb is not None:
+            return ("color", rgb)
+    return ("none", None)
+
+
+def _image_luminance(part: object, reference: str) -> float | None:
+    rel = part.rels.get(reference)  # type: ignore[attr-defined]
+    if rel is None or rel.is_external:
+        return None
+    try:
+        with Image.open(BytesIO(rel.target_part.blob)) as image:
+            return ImageStat.Stat(image.convert("L")).mean[0] / 255.0
+    except (OSError, ValueError):
+        return None
+
+
+def _background_luminance(slide, slide_width: int, slide_height: int) -> float | None:
+    kind, value = background_of(slide, slide_width, slide_height)
+    if kind == "color":
+        return _luminance(value)  # type: ignore[arg-type]
+    if kind == "image":
+        part, reference = value  # type: ignore[misc]
+        return _image_luminance(part, reference)
+    return None
+
+
+def _theme_font(slide) -> str:
+    """East Asian typeface of the theme's minor font (lyrics use the body font)."""
+    theme = _theme_element(slide)
+    if theme is None:
+        return ""
+    for family in ("a:minorFont", "a:majorFont"):
+        node = theme.find(f".//{qn('a:fontScheme')}/{qn(family)}/{qn('a:ea')}")
+        if node is not None:
+            face = (node.get("typeface") or "").strip()
+            if face:
+                return face
+    return ""
+
+
+# ---------------------------------------------------------------- shape choice
+
+_TITLE_PLACEHOLDERS = frozenset({"title", "ctrTitle"})
+_META_PLACEHOLDERS = frozenset({"sldNum", "dt", "ftr"})
+_TITLE_NAME_HINTS = ("제목", "title", "heading", "headline")
+_LYRIC_NAME_HINTS = ("가사", "lyrics", "lyric", "본문", "내용", "message")
+
+
+def _placeholder_type(sp_element: etree._Element) -> str:
+    placeholder = sp_element.find(
+        f"{qn('p:nvSpPr')}/{qn('p:nvPr')}/{qn('p:ph')}"
+    )
+    if placeholder is None:
+        return ""
+    return (placeholder.get("type") or "").strip()
+
+
+def _shape_score(
+    sp_element: etree._Element, geometry: _Geometry, slide_area: int
+) -> int:
+    """Prefer real title placeholders, lyric-sounding names and big boxes."""
+    placeholder = _placeholder_type(sp_element)
+    name = _shape_name_of(sp_element).lower()
+    _left, _top, width, height = geometry.rect(sp_element)
+    area_ratio = (width * height) / slide_area if slide_area else 0.0
+
+    score = 0
+    if placeholder in _TITLE_PLACEHOLDERS:
+        score += 100
+    if any(hint in name for hint in _TITLE_NAME_HINTS):
+        score += 60
+    if any(hint in name for hint in _LYRIC_NAME_HINTS):
+        score += 80
+    if _shape_text_of(sp_element):
+        score += 25
+    score += int(min(area_ratio, 1.0) * 30)
+    if area_ratio < 0.02:  # a caption or a stray label
+        score -= 40
+    return score
+
+
+def _unsupported_text_containers(sld_element: etree._Element) -> list[str]:
+    """Name the containers we cannot fill (a table cell, a SmartArt diagram)."""
+    found: list[str] = []
+    for frame in sld_element.iter(qn("p:graphicFrame")):
+        if not _shape_text_of(frame):
+            continue
+        if frame.find(f".//{qn('a:tbl')}") is not None:
+            found.append("표")
+        elif frame.find(f".//{_DIAGRAM_NS}") is not None:
+            found.append("스마트아트")
+    return found
 
 
 def resolve_title_shape_element(
@@ -207,6 +754,7 @@ def resolve_title_shape_element(
     slide_width: int,
     slide_height: int,
     name: str | None = None,
+    slide=None,
 ) -> tuple[etree._Element | None, str, bool]:
     """Find the shape that should receive the lyrics on this slide (ADR-034).
 
@@ -229,12 +777,19 @@ def resolve_title_shape_element(
     if direct is not None:
         return direct, target, False
 
+    geometry = _geometry_for(slide) if slide is not None else _Geometry(sld_element)
+    slide_area = slide_width * slide_height
     candidates: list[etree._Element] = []
     for sp_element in sld_element.iter(qn("p:sp")):
         if sp_element.find(qn("p:txBody")) is None:
             continue
-        if is_full_bleed_shape(sp_element, slide_width, slide_height):
+        if _placeholder_type(sp_element) in _META_PLACEHOLDERS:
+            continue  # slide number / date / footer: never the lyric box
+        left, top, width, height = geometry.rect(sp_element)
+        if width <= 0 or height <= 0:
             continue
+        if _covers_slide(left, top, width, height, slide_width, slide_height):
+            continue  # the background itself
         sp_pr = sp_element.find(qn("p:spPr"))
         if sp_pr is not None and sp_pr.find(qn("a:blipFill")) is not None:
             continue
@@ -243,22 +798,27 @@ def resolve_title_shape_element(
     if not candidates:
         return None, target, False
 
-    def rank(sp_element: etree._Element) -> tuple[int, int, int, int, str]:
-        has_text = 0 if _shape_text_of(sp_element) else 1
-        width, height = _shape_extent(sp_element)
-        top, left = _shape_offset(sp_element)
-        return (has_text, -(width * height), top, left, _shape_name_of(sp_element))
+    def sort_key(sp_element: etree._Element) -> tuple[int, int, int]:
+        score = _shape_score(sp_element, geometry, slide_area)
+        _left, top, _width, _height = geometry.rect(sp_element)
+        return (-score, top, _left)
 
-    best = min(candidates, key=rank)
+    ranked = sorted(candidates, key=sort_key)
+    best = ranked[0]
     resolved = _shape_name_of(best)
     if len(candidates) > 1:
-        names = [_shape_name_of(item) for item in candidates]
+        detail = ", ".join(
+            f"{_shape_name_of(item)!r}={_shape_score(item, geometry, slide_area)}점"
+            for item in ranked[:5]
+        )
         log.warning(
-            "제목 도형을 이름으로 찾지 못해 추정했습니다: %r (후보 %d개: %s). "
-            "다른 도형을 쓰려면 LYRICS2PPTX_TITLE_SHAPE 로 이름을 지정하세요.",
+            "제목 도형을 이름으로 찾지 못해 추정했습니다: %r (후보 %d개 — %s). "
+            "다른 도형을 쓰려면 그 도형 이름을 %r 로 바꾸거나 "
+            "LYRICS2PPTX_TITLE_SHAPE 로 지정하세요.",
             resolved,
-            len(names),
-            ", ".join(repr(item) for item in names),
+            len(candidates),
+            detail,
+            config.TITLE_SHAPE_NAME,
         )
     return best, resolved, True
 
@@ -341,7 +901,12 @@ def _style_from_element(
 # PowerPoint's normAutofit absorbs whatever this estimate overshoots.
 _SYNTH_MIN_PT = 18
 _SYNTH_MAX_PT = 66
-_SYNTH_FONT = "맑은 고딕"
+_SYNTH_FONT = "맑은 고딕"  # fallback when the theme names no East Asian font
+_SYNTH_DARK_TEXT = (0, 0, 0)
+_SYNTH_LIGHT_TEXT = (255, 255, 255)
+# Below this relative luminance the background is "dark" and black lyrics would
+# disappear, so the synthesized colour flips to white (ADR-035).
+_SYNTH_TEXT_CONTRAST_THRESHOLD = 0.45
 
 
 def _synthesize_style(
@@ -349,6 +914,8 @@ def _synthesize_style(
     slide_index: int,
     *,
     slide_height: int,
+    slide=None,
+    slide_width: int = 0,
 ) -> StyleSpec:
     """Invent a usable run style for a template that carries none.
 
@@ -361,24 +928,45 @@ def _synthesize_style(
     body_pr = tx_body.find(qn("a:bodyPr")) if tx_body is not None else None
     paragraphs = tx_body.findall(qn("a:p")) if tx_body is not None else []
 
-    _width, height = _shape_extent(shape_element)
+    if slide is not None:
+        # A box inside a group stores child-space coordinates; use the slide-space
+        # rectangle so the synthesized size matches what the user sees.
+        _left, _top, _width, height = _geometry_for(slide).rect(shape_element)
+    else:
+        _width, height = _shape_extent(shape_element)
     height_emu = height or slide_height
     size_pt = int(round(height_emu / 12700 * 0.42))  # EMU -> pt, ~2 lines + leading
     size_pt = max(_SYNTH_MIN_PT, min(_SYNTH_MAX_PT, size_pt))
     # ``sz`` and ``StyleSpec.sz`` are hundredths of a point (72 pt -> 7200).
     size = size_pt * 100
 
+    font = (_theme_font(slide) if slide is not None else "") or _SYNTH_FONT
+    luminance = (
+        _background_luminance(slide, slide_width, slide_height)
+        if slide is not None and slide_width > 0
+        else None
+    )
+    text_rgb = (
+        _SYNTH_LIGHT_TEXT
+        if luminance is not None and luminance < _SYNTH_TEXT_CONTRAST_THRESHOLD
+        else _SYNTH_DARK_TEXT
+    )
+    color_hex = "%02X%02X%02X" % text_rgb
+
     rpr = parse_xml(
         f'<a:rPr {nsdecls("a")} lang="ko-KR" sz="{size}">'
-        '<a:solidFill><a:srgbClr val="000000"/></a:solidFill>'
-        f'<a:latin typeface="{_SYNTH_FONT}"/><a:ea typeface="{_SYNTH_FONT}"/>'
+        f'<a:solidFill><a:srgbClr val="{color_hex}"/></a:solidFill>'
+        f'<a:latin typeface="{font}"/><a:ea typeface="{font}"/>'
         "</a:rPr>"
     )
     log.warning(
-        "템플릿 슬라이드 %d 의 가사 도형에 서식(rPr)이 없어 합성했습니다: %dpt %s",
+        "템플릿 슬라이드 %d 의 가사 도형에 서식(rPr)이 없어 합성했습니다: "
+        "%dpt %s %s 글자 (배경 명도 %s)",
         slide_index + 1,
         size_pt,
-        _SYNTH_FONT,
+        font,
+        "흰" if text_rgb == _SYNTH_LIGHT_TEXT else "검정",
+        "?" if luminance is None else f"{luminance:.2f}",
     )
     return StyleSpec(
         slide_index=slide_index,
@@ -416,6 +1004,7 @@ def extract_slide_style(
             slide_width=slide_width,
             slide_height=slide_height,
             name=name,
+            slide=slide,
         )
 
     if shape_element is None:
@@ -491,10 +1080,21 @@ def _analyze(
             repr(getattr(shape, "name", "?"))
             for shape in presentation.slides[selected_index].shapes
         ) or "없음"
+        blocked = _unsupported_text_containers(
+            presentation.slides[selected_index]._element
+        )
+        if blocked:
+            reason = (
+                f" 이 슬라이드의 글자는 {'/'.join(sorted(set(blocked)))} 안에 있습니다 — "
+                "표·스마트아트는 지원하지 않습니다. 일반 텍스트 상자를 하나 추가하세요."
+            )
+        else:
+            reason = " 텍스트 상자를 하나 두세요."
         raise TemplateStructureError(
             f"배경 슬라이드 {slide_index} 에 가사를 넣을 텍스트 도형이 없습니다. "
-            f"존재하는 도형: {available}. 텍스트 상자를 하나 두거나 "
-            f"LYRICS2PPTX_TITLE_SHAPE 로 이름을 지정하세요."
+            f"존재하는 도형: {available}.{reason} "
+            f"다른 도형을 쓰려면 그 이름을 {config.TITLE_SHAPE_NAME!r} 로 바꾸거나 "
+            f"LYRICS2PPTX_TITLE_SHAPE 로 지정하세요."
         )
 
     # A template without any run style (a background plus an empty box) would
@@ -504,10 +1104,15 @@ def _analyze(
             presentation.slides[selected_index]._element,
             slide_width=slide_width,
             slide_height=slide_height,
+            slide=presentation.slides[selected_index],
         )
         if selected_element is not None:
             styles[selected_index] = _synthesize_style(
-                selected_element, selected_index, slide_height=slide_height
+                selected_element,
+                selected_index,
+                slide_height=slide_height,
+                slide=presentation.slides[selected_index],
+                slide_width=slide_width,
             )
             selected_style = styles[selected_index]
 

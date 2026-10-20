@@ -20,7 +20,7 @@ from .errors import (
     TemplateStructureError,
 )
 
-__version__ = "0.1.0b2"
+__version__ = "0.1.0b3"
 
 __all__ = [
     "__version__",

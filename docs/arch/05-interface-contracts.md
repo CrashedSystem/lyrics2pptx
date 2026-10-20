@@ -239,10 +239,10 @@ def resolve_output_path(output_path: Path | None, *, title: str | None) -> Path:
 | 항목 | 규칙 | 소유 |
 | --- | --- | --- |
 | 템플릿 | 읽기 전용. 쓰기 모드 open 금지 | `template_reader` |
-| 가사 도형 탐색 | 이름(`LYRICS2PPTX_TITLE_SHAPE`, 기본 `제목 1`) → 없으면 **추정**(글자 있음·전면 아님·그림 아님 → 면적 큰 순, 동점은 위/왼쪽/이름). 후보 2개 이상이면 WARNING | `template_reader` (ADR-034) |
-| 템플릿 서식 | 선택 슬라이드의 `a:rPr` 상속. 없으면 상자 높이×0.42(18~66pt)·검정·맑은 고딕으로 **합성**하고 `--doctor`·WARNING 에 남긴다 | `template_reader` (ADR-034) |
-| 배경 썸네일 | 그림 배경은 원본 바이트, 단색 배경은 `a:srgbClr` 로 640px PNG. 색을 못 읽으면 흰색 | `thumbnails` (ADR-034) |
-| 기본 배경 번호 | 미지정 기본값이 템플릿 범위를 넘으면 **마지막 슬라이드**(WARNING). 명시한 값은 하드 오류(클램프 없음) | `template_reader` (ADR-034) |
+| 가사 도형 탐색 | 이름(`LYRICS2PPTX_TITLE_SHAPE`, 기본 `제목 1`) → 없으면 **점수**: 제목 placeholder +100 · `가사`/`lyrics` +80 · `제목`/`title` +60 · 글자 +25 · 면적 ≤30, `sldNum`/`dt`/`ftr` 제외, 전면(각 변 1% 허용) 제외. 후보 2개 이상이면 점수 목록 WARNING (ADR-035) | `template_reader` (ADR-034/035) |
+| 템플릿 서식 | 선택 슬라이드의 `a:rPr` 상속. 없으면 상자 높이×0.42(18~66pt)로 **합성**하고, 배경 명도 < 0.45 면 흰 글자, 글꼴은 테마 EA(없으면 맑은 고딕). `--doctor`·WARNING 에 남긴다 | `template_reader` (ADR-034/035) |
+| 배경 썸네일 | 슬라이드 → 레이아웃 → 마스터 상속. 그림은 원본 바이트, 색(`srgbClr`/`schemeClr`/`sysClr`/`prstClr` + `tint`/`shade`/`lumMod`/`lumOff`/`alpha`)은 640px PNG. 색을 못 읽으면 흰색 | `thumbnails` (ADR-034/035) |
+| 기본 배경 번호 | 미지정 기본값이 템플릿 범위를 넘으면 **마지막 슬라이드**(WARNING). 명시한 값은 하드 오류(클램프 없음). 폴백한 슬라이드에 글상자가 없으면 미리보기가 500 + 슬라이드 번호 안내 (ADR-035) | `template_reader` (ADR-034/035) |
 | 산출물 경로 | `resolve_output_path()`: `output/` 안. 이름 sanitize | `pipeline` |
 | 임시 파일 | `output/.tmp-<uuid>.pptx` → `os.replace` | `builder` (AD-13) |
 | 인코딩 | 모든 텍스트 파일 UTF-8 no BOM, LF | 전 모듈 |

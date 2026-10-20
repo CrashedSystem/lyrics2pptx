@@ -28,7 +28,7 @@ from pptx.oxml.ns import qn
 
 from .. import config
 from ..errors import ConfigError
-from .template_reader import is_full_bleed_shape, resolve_title_shape_element
+from .template_reader import background_of, resolve_title_shape_element
 
 __all__ = [
     "SlideMeta",
@@ -83,85 +83,10 @@ def _thumbnail_url(index: int) -> str:
     return f"/api/slides/{index}/thumbnail"
 
 
-def _first_embed_reference(
-    sld_element, slide_width: int, slide_height: int
-) -> str | None:
-    """Return the ``r:embed`` of the slide background, or ``None``.
-
-    Handles every background form found in the template: a ``<p:bg>`` blipFill
-    (shared/theme-like background), a full-bleed ``<p:pic>``, and a full-bleed
-    autoshape filled with a picture (template slide 11).
-    """
-    background = sld_element.find(f"{qn('p:cSld')}/{qn('p:bg')}")
-    if background is not None:
-        for blip in background.iter(qn("a:blip")):
-            reference = blip.get(qn("r:embed"))
-            if reference:
-                return reference
-
-    for picture in sld_element.iter(qn("p:pic")):
-        for blip in picture.iter(qn("a:blip")):
-            reference = blip.get(qn("r:embed"))
-            if reference:
-                return reference
-
-    for shape in sld_element.iter(qn("p:sp")):
-        if not is_full_bleed_shape(shape, slide_width, slide_height):
-            continue
-        sp_pr = shape.find(qn("p:spPr"))
-        blip_fill = sp_pr.find(qn("a:blipFill")) if sp_pr is not None else None
-        if blip_fill is None:
-            continue
-        for blip in blip_fill.iter(qn("a:blip")):
-            reference = blip.get(qn("r:embed"))
-            if reference:
-                return reference
-    return None
-
-
 # Solid-colour backgrounds have no image part; paint them at this width so the
 # UI tile keeps a sensible size (height follows the slide aspect ratio).
 _THUMB_WIDTH = 640
 _FALLBACK_RGB = (255, 255, 255)
-
-
-def _rgb_from_fill(element) -> tuple[int, int, int] | None:
-    """First ``a:srgbClr`` inside ``element`` as RGB, or ``None``.
-
-    Only literal sRGB values are read; a theme/scheme colour (``a:schemeClr``)
-    would need theme resolution, so those fall through to the caller's default.
-    """
-    for color in element.iter(qn("a:srgbClr")):
-        value = (color.get("val") or "").strip()
-        if len(value) != 6:
-            continue
-        try:
-            return tuple(int(value[offset : offset + 2], 16) for offset in (0, 2, 4))
-        except ValueError:
-            return None
-    return None
-
-
-def _solid_background_rgb(
-    sld_element, slide_width: int, slide_height: int
-) -> tuple[int, int, int]:
-    """Colour of a non-image background (``p:bg`` or a full-bleed shape)."""
-    background = sld_element.find(f"{qn('p:cSld')}/{qn('p:bg')}")
-    if background is not None:
-        rgb = _rgb_from_fill(background)
-        if rgb is not None:
-            return rgb
-
-    for shape in sld_element.iter(qn("p:sp")):
-        if not is_full_bleed_shape(shape, slide_width, slide_height):
-            continue
-        sp_pr = shape.find(qn("p:spPr"))
-        if sp_pr is None or sp_pr.find(qn("a:blipFill")) is not None:
-            continue
-        rgb = _rgb_from_fill(sp_pr)
-        if rgb is not None:
-            return rgb
-    return _FALLBACK_RGB
 
 
 def _render_solid_png(rgb: tuple[int, int, int], width: int, height: int) -> bytes:
@@ -176,25 +101,26 @@ def _render_solid_png(rgb: tuple[int, int, int], width: int, height: int) -> byt
 def _thumbnail_for(slide, slide_width: int, slide_height: int) -> SlideThumbnail:
     """Background image of ``slide``; a solid colour is rendered as a PNG.
 
-    Image backgrounds (``p:bg`` blipFill, full-bleed picture, full-bleed
-    picture-filled autoshape) are served byte-for-byte. A slide whose background
-    is a solid colour has no image part, and returning "nothing" made the web UI
-    show an empty tile after a template swap — so we paint the colour with Pillow
-    instead (ADR-034). White is the honest answer when no colour is found.
+    The slide's background is inherited (slide → layout → master, ADR-035), and
+    either form is served: an embedded picture byte-for-byte, a solid colour
+    (including theme colours such as ``schemeClr accent1``) painted with Pillow.
+    White is the honest answer when neither is found.
     """
-    reference = _first_embed_reference(slide._element, slide_width, slide_height)
-    if reference is not None:
-        rel = slide.part.rels.get(reference)
+    kind, value = background_of(slide, slide_width, slide_height)
+    if kind == "image":
+        part, reference = value  # type: ignore[misc]
+        rel = part.rels.get(reference)  # type: ignore[attr-defined]
         if rel is not None and rel.reltype == _IMAGE_RELTYPE and not rel.is_external:
-            part = rel.target_part
-            blob = part.blob
-            if blob:
-                content_type = getattr(part, "content_type", None) or _DEFAULT_IMAGE_TYPE
-                return SlideThumbnail(data=blob, content_type=content_type)
-
-    rgb = _solid_background_rgb(slide._element, slide_width, slide_height)
+            part_blob = rel.target_part.blob
+            if part_blob:
+                content_type = (
+                    getattr(rel.target_part, "content_type", None)
+                    or _DEFAULT_IMAGE_TYPE
+                )
+                return SlideThumbnail(data=part_blob, content_type=content_type)
+    rgb = value if kind == "color" else _FALLBACK_RGB
     return SlideThumbnail(
-        data=_render_solid_png(rgb, slide_width, slide_height),
+        data=_render_solid_png(rgb, slide_width, slide_height),  # type: ignore[arg-type]
         content_type="image/png",
     )
 

@@ -365,8 +365,15 @@ def resolve_slide_index(value: object = None) -> int:
         ConfigError: ``value`` is not an integer or falls outside 1..slide_count.
     """
     index = _coerce_slide_index(value)
-    get_template_profile(config.TEMPLATE_PATH, slide_index=index)
-    return index
+    # Keep ``None`` as "use the default" so template_reader may fall back to the
+    # last slide of a shorter template (ADR-034); only an explicit number is
+    # rejected when out of range.
+    profile = get_template_profile(
+        config.TEMPLATE_PATH, slide_index=None if value is None else index
+    )
+    # Report what the build will actually use: a template shorter than the
+    # default 19 resolves to its last slide (ADR-034).
+    return profile.selected_slide + 1
 
 
 def run(
@@ -460,6 +467,13 @@ def doctor_report() -> dict[str, object]:
                     "selected_slide": profile.selected_slide + 1,
                     "selected_slide_has_title_shape": (
                         profile.styles[profile.selected_slide].shape_found
+                    ),
+                    "title_shape": profile.selected_shape_name,
+                    "title_shape_detected": profile.shape_detected,
+                    "style_source": (
+                        "synthesized"
+                        if profile.styles[profile.selected_slide].synthesized
+                        else "template"
                     ),
                     "pool": list(profile.pool),
                     "pool_size": len(profile.pool),

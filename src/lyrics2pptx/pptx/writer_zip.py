@@ -34,7 +34,6 @@ from pathlib import Path
 
 from lxml import etree
 
-from .. import config
 from ..errors import ConfigError, TemplateStructureError
 from .clone import RT_NOTES_SLIDE, RT_SLIDE
 from .fill import fill_txBody, find_title1_txBody
@@ -236,10 +235,10 @@ def write_via_zip(
         target_rels = f"ppt/slides/_rels/slide{new_index}.xml.rels"
 
         slide_root = etree.fromstring(data[source_name])
-        tx_body = find_title1_txBody(slide_root)
+        tx_body = find_title1_txBody(slide_root, name=profile.selected_shape_name)
         if tx_body is None:
             raise TemplateStructureError(
-                f"템플릿 {source_name} 에 {config.TITLE_SHAPE_NAME!r} 도형이 없습니다"
+                f"템플릿 {source_name} 에 {profile.selected_shape_name!r} 도형이 없습니다"
             )
         fill_txBody(
             tx_body,

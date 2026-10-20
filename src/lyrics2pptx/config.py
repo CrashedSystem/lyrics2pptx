@@ -45,6 +45,7 @@ __all__ = [
     "CLONE_STRATEGY",
     "TITLE_SHAPE_NAME",
     "SLIDE_INDEX",
+    "SLIDE_INDEX_IS_EXPLICIT",
     "NORM_AUTOFIT",
     "REQUEST_MAX_BYTES",
     "ROBOTS_CACHE_TTL",
@@ -228,6 +229,12 @@ TITLE_SHAPE_NAME = _env_str("LYRICS2PPTX_TITLE_SHAPE", "제목 1")
 # so it previews the real output shape without extra filling. The upper bound
 # (slide_count) is enforced by ``template_reader`` because it needs the template.
 SLIDE_INDEX = _env_int("LYRICS2PPTX_SLIDE_INDEX", 19, minimum=1)
+
+# True when the slide number above came from the environment instead of the
+# default. ``template_reader`` uses this to tell "the user asked for slide 19"
+# (hard error on a shorter template) from "the default no longer fits"
+# (fall back to the last slide — ADR-034, a plain template swap must work).
+SLIDE_INDEX_IS_EXPLICIT = "LYRICS2PPTX_SLIDE_INDEX" in os.environ
 
 _KNOWN_ENV = frozenset(
     {

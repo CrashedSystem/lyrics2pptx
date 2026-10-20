@@ -26,7 +26,6 @@ from pathlib import Path
 from pptx import Presentation
 from pptx.oxml.ns import qn
 
-from .. import config
 from ..errors import ConfigError, TemplateStructureError
 from .clone import RT_SLIDE, clone_slide
 from .fill import fill_txBody, find_title1_txBody
@@ -92,10 +91,12 @@ def write_via_parts(
         sld_id.set("id", str(next_id))
         next_id += 1
 
-        tx_body = find_title1_txBody(new_part._element)
+        tx_body = find_title1_txBody(
+            new_part._element, name=profile.selected_shape_name
+        )
         if tx_body is None:
             raise TemplateStructureError(
-                f"복제 슬라이드에서 {config.TITLE_SHAPE_NAME!r} 도형을 찾지 못했습니다 "
+                f"복제 슬라이드에서 {profile.selected_shape_name!r} 도형을 찾지 못했습니다 "
                 f"(order={order}, slide_index={profile.selected_slide + 1})"
             )
         fill_txBody(

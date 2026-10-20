@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "lyrics2pptx"
-version = "0.1.0"
+version = "0.1.0b2"
 description = "검색어 기반 가사 수집 → template.pptx 슬라이드 복제 후 2줄씩 채우기 (로컬 단일 사용자)"
 requires-python = ">=3.12"
 dependencies = [

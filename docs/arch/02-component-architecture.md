@@ -38,9 +38,10 @@ L4 는 아무도 import 하지 않는다. L4 → L4 금지 (`cli` ↔ `webapp` �
 | `crawl/__init__.py` | L3 | `SOURCES` 레지스트리, `get_source(name)` | 파싱 로직 |
 | `text/normalize.py` | L2 | `str` → `list[str]` (N1~N11) | 슬라이드 페어링, pptx 접근 |
 | `text/split.py` | L2 | `list[str]` → `list[LinePair]` | pptx 접근, 파일 I/O |
-| `pptx/template_reader.py` | L2 | 템플릿 1회 분석(template profile), 배경 풀, 슬라이드별 스타일 캐시 | 슬라이드 생성/저장 |
+| `pptx/template_reader.py` | L2 | 템플릿 1회 분석(template profile), 배경 풀, 슬라이드별 스타일 캐시, **가사 도형 자동 인식·서식 합성**(ADR-034) | 슬라이드 생성/저장 |
 | `pptx/clone.py` | L2 | 슬라이드 1장 복제 + rels 재매핑 | 텍스트 내용 결정, 배경 선택 |
-| `pptx/fill.py` | L2 | `제목 1` txBody 재구성 + `normAutofit` | 복제, 배경, 저장 |
+| `pptx/fill.py` | L2 | 가사 도형(`selected_shape_name`) txBody 재구성 + `normAutofit` | 복제, 배경, 저장 |
+| `pptx/thumbnails.py` | L2 | 슬라이드 메타(가사 도형 유무) + 배경 썸네일(그림=원본 바이트, 단색=PNG) 카탈로그 캐시 | 슬라이드 생성/저장 |
 | `pptx/writer_parts.py` | L2 | 방식 A: `<p:sld>` deepcopy → 새 파트 등록 후 python-pptx 로 저장 | 템플릿 분석, 배경 선택 |
 | `pptx/writer_zip.py` | L2 | 폴백 F1: OPC zip 재작성 | 템플릿 분석, 배경 선택 |
 | `pptx/writer.py` | L3 | 작성기 전략 선택(`select_writer`)과 능력 프로브 | 슬라이드 파싱/채우기/저장 로직 자체 |
